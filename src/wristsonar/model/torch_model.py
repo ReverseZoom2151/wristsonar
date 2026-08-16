@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from wristsonar.types import N_JOINTS
 
-__all__ = ["ModelUnavailableError", "create_pose_cnn"]
+__all__ = ["ModelUnavailableError", "create_pose_cnn", "load_pose_cnn"]
 
 
 class ModelUnavailableError(RuntimeError):
@@ -57,3 +58,29 @@ def create_pose_cnn(*, channels: int = 2, width: int = 32) -> Any:
 
     torch.manual_seed(0)
     return PoseCNN()
+
+
+def load_pose_cnn(weights: Path, *, width: int = 32) -> Any:
+    """Load CPU-portable state written by ``export_torch_checkpoint``.
+
+    Weight integrity belongs to :class:`CheckpointBundle`, not here.  This
+    function owns the narrower Torch responsibility: construct the known
+    architecture, reject arbitrary pickle objects through ``weights_only``,
+    and reject missing or incompatible parameter tensors loudly.
+    """
+    try:
+        import torch
+    except ImportError as error:
+        raise ModelUnavailableError(
+            "install training support with: pip install -e '.[train]'"
+        ) from error
+    if not weights.is_file():
+        raise FileNotFoundError(f"checkpoint weights do not exist: {weights}")
+    model = create_pose_cnn(width=width)
+    try:
+        state = torch.load(weights, map_location="cpu", weights_only=True)
+        model.load_state_dict(state, strict=True)
+    except (RuntimeError, ValueError, TypeError) as error:
+        raise ValueError(f"invalid pose-cnn weights {weights}: {error}") from error
+    model.eval()
+    return model
