@@ -7,11 +7,19 @@ clean checkout, while training opts in through ``wristsonar[train]``.
 
 from wristsonar.model.checkpoint import CheckpointMetadata
 from wristsonar.model.dataset import PoseWindows, WindowExample
+from wristsonar.model.normalization import (
+    FeatureNormalizer,
+    NormalizationError,
+    PoseNormalizer,
+)
 from wristsonar.model.torch_model import ModelUnavailableError, create_pose_cnn
 
 __all__ = [
     "CheckpointMetadata",
+    "FeatureNormalizer",
     "ModelUnavailableError",
+    "NormalizationError",
+    "PoseNormalizer",
     "PoseWindows",
     "WindowExample",
     "create_pose_cnn",
