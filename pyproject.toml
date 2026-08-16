@@ -25,6 +25,11 @@ packages = ["src/wristsonar"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    # The suite must pass on a machine that has downloaded nothing, so any
+    # test needing a real dataset carries this and skips cleanly without it.
+    "dataset: requires a downloaded dataset, skipped by default",
+]
 
 [tool.ruff]
 line-length = 88
@@ -34,6 +39,8 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
+# Checked against the supported floor rather than the development version, so
+# a 3.12-only construct is caught here rather than by a 3.11 user.
 python_version = "3.11"
 strict = true
 files = ["src", "tests"]
