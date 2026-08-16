@@ -9,7 +9,7 @@ import numpy as np
 
 from wristsonar.model.checkpoint import CheckpointBundle
 from wristsonar.model.predictor import NormalizedPosePredictor
-from wristsonar.model.torch_model import ModelUnavailableError, load_pose_cnn
+from wristsonar.model.torch_model import load_pose_cnn
 from wristsonar.preprocess import (
     WATCHHAND_PREPROCESSING,
     PreprocessingDescriptor,

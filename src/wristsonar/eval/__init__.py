@@ -36,8 +36,12 @@ from wristsonar.eval.experiment import (
     CrossUserExperimentResult,
     ExperimentError,
     ExperimentResult,
+    FoldFamilyResult,
+    SplitAbsence,
+    SplitSuiteResult,
     run_cross_user_experiment,
     run_experiment,
+    run_split_suite,
 )
 from wristsonar.eval.guard import (
     GuardBinding,
@@ -89,6 +93,7 @@ __all__ = [
     "Dataset",
     "ExperimentError",
     "ExperimentResult",
+    "FoldFamilyResult",
     "GuardBinding",
     "GuardFinding",
     "GuardName",
@@ -104,7 +109,9 @@ __all__ = [
     "Report",
     "ResultRow",
     "SampleMeta",
+    "SplitAbsence",
     "SplitIndices",
+    "SplitSuiteResult",
     "Waiver",
     "assert_no_leakage",
     "check_evaluation_size",
@@ -119,6 +126,7 @@ __all__ = [
     "run_cross_user_experiment",
     "run_experiment",
     "run_guards",
+    "run_split_suite",
     "sweep_calibration",
     "within_session_split",
 ]
