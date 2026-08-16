@@ -22,7 +22,9 @@ def test_training_rejects_mismatched_supervision_before_torch_is_needed() -> Non
         train_pose_cnn(x, wrong_y, x, wrong_y)
 
 
-def test_training_explains_the_optional_torch_dependency() -> None:
+def test_training_explains_the_optional_torch_dependency(
+    without_torch: None,
+) -> None:
     x = np.zeros((2, 2, 3, 4), dtype=np.float32)
     y = np.zeros((2, 21, 3), dtype=np.float32)
 

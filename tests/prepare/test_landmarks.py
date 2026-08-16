@@ -18,6 +18,7 @@ class NoopDetector:
 
 def test_landmark_preparation_refuses_to_fill_missing_video_labels(
     tmp_path: Path,
+    without_opencv: None,
 ) -> None:
     with pytest.raises(LandmarkPreparationError, match="preparation support"):
         prepare_landmarks(

@@ -26,6 +26,7 @@ def test_model_identifier_requires_a_version_and_width() -> None:
 
 def test_loader_verifies_bundle_before_reporting_missing_optional_torch(
     tmp_path: Path,
+    without_torch: None,
 ) -> None:
     weights = tmp_path / "model.pt"
     weights.write_bytes(b"not-a-torch-file-but-hashed")
