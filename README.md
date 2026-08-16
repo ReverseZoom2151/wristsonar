@@ -103,19 +103,20 @@ wrist and leaves what moved.
 
 ## Where it stands
 
-The offline substrate is built: data integrity, signal processing, evaluation,
-landmark preparation, causal model inputs, checkpoint provenance, capture
-health checks and portable pose frames. Nothing has been trained on WatchHand
-yet, and no benchmark result exists, honest or otherwise.
+The offline and host-side substrate is built: data integrity, signal processing,
+landmark preparation, causal model inputs, guarded aggregate evaluation,
+training, checkpoint provenance/loading, capture health checks, realtime
+inference and a Blender sink. Nothing has been trained on WatchHand yet, and no
+benchmark result exists, honest or otherwise.
 
 The evaluation harness preceded training deliberately. A benchmark that arrives
 after the model is a benchmark shaped by the model.
 
-The largest open risk is whether the public WatchHand dataset ships raw audio
-or precomputed echo profiles. If it is profiles and the preprocessing is not
-fully specified, a live capture app can never produce the same input, and the
-training half of this project would never meet the device half. That is being
-checked before anything is built on top of it.
+WatchHand confirms that it ships precomputed original and differential echo
+profiles, not raw audio, along with the chirp and synchronization parameters.
+The remaining risk is empirical: a target watch must still be shown to emit
+profiles compatible with the public archive. That cannot be proved until a Wear
+OS capture path and real hardware are available.
 
 ## Scope
 

@@ -4,7 +4,19 @@ Six phases, each with a deliverable and an exit criterion that can be checked
 rather than argued about. The ordering is itself a claim, and the important part
 of it is that phase 1 precedes phase 2.
 
+## Current status
+
+The offline signal layer is complete and synthetic-verified. The software for
+manifest-gated data ingest, landmark preparation, split construction, guarded
+evaluation, Torch training, checkpoint export/loading and host-side Blender
+inference is also complete. No public WatchHand archive has been downloaded,
+no landmark sidecars have been generated, and no trained weights or benchmark
+result exists. Those are external-data milestones, not wording changes this
+repository can make true on its own.
+
 ## Phase 0. Signal layer, offline
+
+**Status: implemented and synthetic-verified.**
 
 Chirp synthesis, matched filtering, echo profiles, differential profiles.
 Property-based tests against synthetic echoes with known delay and amplitude. No
@@ -20,6 +32,8 @@ downstream is blamed for them. Pinning it against a forward model, before any
 real data can supply an excuse, is the only cheap moment to catch that.
 
 ## Phase 1. Data and evaluation harness
+
+**Status: software implemented; empirical exit pending the public archive.**
 
 Ingest the WatchHand dataset. Build the four-split harness, the trivial
 baselines, and the calibration-curve reporter.
@@ -41,6 +55,9 @@ risks below.
 
 ## Phase 2. Reproduce
 
+**Status: training, checkpoint and aggregate-evaluation software implemented;
+weights and results pending the public archive and generated sidecars.**
+
 Train the published architecture on the public data. Land inside the published
 error bars on all four splits, and say plainly where that does not happen.
 
@@ -50,6 +67,9 @@ artifacts.
 
 ## Phase 3. Capture app
 
+**Status: host capture contract and validation implemented; Wear OS transport
+and hardware validation pending.**
+
 Wear OS duplex capture. This is where platform reality bites: sample-rate lies,
 automatic gain control, buffer underruns, and the fact that two hours of
 continuous sensing drains 78 percent of a Galaxy Watch 3 battery.
@@ -58,12 +78,19 @@ Exits with a live echo profile from a real wrist.
 
 ## Phase 4. Close the loop
 
+**Status: host inference, TCP/JSONL and Blender sink implemented; live model,
+OpenXR adapter and user calibration flow pending.**
+
 Live inference, OpenXR and Blender sinks, and the two-minute calibration flow as
 a real user-facing thing rather than a training-time detail.
 
 Exits with a hand moving on screen, driven by a watch nobody modified.
 
 ## Phase 5. Extend
+
+**Status: the bounded clap-configuration side project is implemented offline;
+cross-device transfer, calibration reduction and new ground-truth data remain
+future empirical work.**
 
 Only now, and in rough order of value: cross-device transfer, reducing the
 calibration budget, a second dataset with genuine motion-capture ground truth
@@ -126,16 +153,12 @@ WatchHand reports 14.88 mm cross-user, leave-one-out. That is good. If this
 reproduction lands at 25 mm, the honest report says 25 mm, and the project is
 what it is.
 
-## Open decisions
+## Decisions and remaining external prerequisites
 
-Carried forward from the plan and not resolved here.
-
-Whether to start from the public WatchHand data only or also build a capture rig
-for original data. Public-only is faster, reproducible and immediately honest.
-Original data is the only route beyond what was released, and the only way to
-get real motion-capture ground truth instead of video-derived labels.
-
-Whether any part of the clap idea is kept, per phase 5 above.
-
-Which watch to buy first. WatchHand covers Galaxy Watch 7, Xiaomi Watch 2 Pro
-and Pixel Watch 3.
+The project uses public WatchHand data first, and retains the physically bounded
+clap-configuration component as a side project. The remaining prerequisites are
+not open product choices: obtain the approximately 175 GB archive with enough
+storage, generate and manifest landmark sidecars, train and publish a model,
+then validate a Wear OS capture app on one of the watches used in WatchHand.
+Target-hardware selection remains open between Galaxy Watch 7, Xiaomi Watch 2
+Pro and Pixel Watch 3.
