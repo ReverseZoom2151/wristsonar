@@ -6,6 +6,7 @@ clean checkout, while training opts in through ``wristsonar[train]``.
 """
 
 from wristsonar.model.checkpoint import CheckpointBundle, CheckpointMetadata
+from wristsonar.model.corpus import SessionWindowSource, TrainingCorpus
 from wristsonar.model.dataset import PoseWindows, WindowExample
 from wristsonar.model.load import (
     CheckpointLoadError,
@@ -41,8 +42,10 @@ __all__ = [
     "PoseNormalizer",
     "PoseWindows",
     "PredictorError",
+    "SessionWindowSource",
     "TrainedPoseModel",
     "TrainingConfig",
+    "TrainingCorpus",
     "TrainingError",
     "TrainingHistory",
     "WindowExample",

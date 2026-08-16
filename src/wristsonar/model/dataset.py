@@ -31,6 +31,7 @@ class WindowExample:
     target: NDArray[np.float32]
     participant: str
     session: str
+    device: str
     timestamp_s: float
 
     def __post_init__(self) -> None:
@@ -93,5 +94,10 @@ class PoseWindows:
                 target=targets[label],
                 participant=f"sub{session.ref.participant}",
                 session=session.ref.identity,
+                device=(
+                    session.ref.device.value
+                    if session.ref.device is not None
+                    else "unknown-device"
+                ),
                 timestamp_s=float(at),
             )
