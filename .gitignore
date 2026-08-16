@@ -1,5 +1,5 @@
 # Datasets. Never committed. See docs/DATA.md for how to fetch them.
-data/
+/data/
 *.npy
 *.npz
 *.wav
