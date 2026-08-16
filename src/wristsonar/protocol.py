@@ -28,11 +28,11 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 __all__ = [
-    "Split",
-    "Protocol",
-    "Measurement",
-    "GroundTruth",
     "WEAKEST_SPLIT",
+    "GroundTruth",
+    "Measurement",
+    "Protocol",
+    "Split",
 ]
 
 
@@ -223,6 +223,5 @@ class Measurement:
             self.unit == other.unit
             and self.protocol.split is other.protocol.split
             and self.protocol.ground_truth is other.protocol.ground_truth
-            and self.protocol.calibration_minutes
-            == other.protocol.calibration_minutes
+            and self.protocol.calibration_minutes == other.protocol.calibration_minutes
         )

@@ -13,12 +13,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 __all__ = [
+    "JOINT_NAMES",
+    "N_JOINTS",
     "SPEED_OF_SOUND",
     "ChirpConfig",
     "EchoProfile",
     "HandPose",
-    "JOINT_NAMES",
-    "N_JOINTS",
 ]
 
 SPEED_OF_SOUND = 343.0
@@ -64,7 +64,7 @@ class ChirpConfig:
 
     @property
     def n_samples(self) -> int:
-        return int(round(self.duration_s * self.sample_rate))
+        return round(self.duration_s * self.sample_rate)
 
     @property
     def frame_rate(self) -> float:
