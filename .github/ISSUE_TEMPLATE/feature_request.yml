@@ -1,0 +1,55 @@
+name: Feature request
+description: Suggest a capability, an interface change, or a new evaluation
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What is hard or impossible today. Describe the situation you are in
+        rather than the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+      description: The change you are proposing, and roughly how it would be used.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including doing nothing, and why that is not enough.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Signal processing
+        - Model or training
+        - Evaluation and reporting
+        - Device or capture
+        - Packaging, tooling or docs
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: evaluation
+    attributes:
+      label: How would we know it worked
+      description: >
+        If this touches accuracy in any way, say which split would demonstrate
+        it. A within-session improvement on its own does not demonstrate
+        anything, so please name the cross-session, cross-user or cross-device
+        evidence you would expect.
+    validations:
+      required: false

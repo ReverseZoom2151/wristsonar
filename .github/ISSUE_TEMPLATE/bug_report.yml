@@ -1,0 +1,77 @@
+name: Bug report
+description: Something behaves differently from what the code or docs say it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security issues here. See SECURITY.md for the
+        private route.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >
+        The smallest set of steps or the shortest script that shows the
+        problem. A synthetic reproduction that needs no dataset is far easier
+        to act on than one that needs recorded audio.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The release, or the commit SHA if you are on a checkout.
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version and operating system
+      placeholder: "3.12.3 on Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Does this involve real hardware
+      options:
+        - No, it reproduces with synthetic input
+        - Yes, it needs a device or recorded audio
+    validations:
+      required: true
+
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Protocol, if a reported number is wrong
+      description: >
+        If the bug is about an accuracy or error figure, paste the output of
+        protocol.describe() for the measurement involved, or the Protocol you
+        constructed. A number without its protocol is not enough to diagnose.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback or logs
+      description: >
+        Paste the full traceback. Please remove anything that identifies a
+        person or a place before pasting.
+      render: shell
+    validations:
+      required: false
