@@ -31,7 +31,7 @@ was produced under. See EVALUATION.md.
 | Data ingest | `wristsonar.data` | Written, manifest-gated |
 | Model input | `wristsonar.model` | Written; training needs public data |
 | Calibration | `wristsonar.eval.calibration` | Written |
-| Capture health | `wristsonar.capture` | Written; needs Wear OS transport |
+| Capture health and transport | `wristsonar.capture` | Written; needs Wear OS sender and hardware validation |
 | Host inference and sinks | `wristsonar.runtime` | Capture wire format, strict inference, JSONL/TCP and Blender written; OpenXR pending |
 
 Everything below marked as intent describes a design decision, not a
@@ -63,8 +63,12 @@ systems needs no remapping table.
 
 The device-independent capture contract is written. `DuplexValidator` rejects
 streams that silently resample 48 kHz audio, change the 600-sample chirp frame,
-or contain discontinuities. The Android transport remains pending hardware
-validation.
+or contain discontinuities. `PcmSynchronizer` turns arbitrary callback
+boundaries into periodic 600-sample chirp frames using the direct acoustic path
+only for timing. A discontinuity discards partial history and forces a new
+lock. `RawPcmWireFrame` supplies a versioned, length-delimited raw PCM transport
+between a watch and this host layer. The Wear OS sender and hardware validation
+remain pending.
 
 A Wear OS application that plays and records simultaneously. The hard parts are
 duplex timing, disabling automatic gain control and noise suppression where the

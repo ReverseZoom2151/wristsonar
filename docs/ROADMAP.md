@@ -67,8 +67,8 @@ artifacts.
 
 ## Phase 3. Capture app
 
-**Status: host capture contract and validation implemented; Wear OS transport
-and hardware validation pending.**
+**Status: host capture contract, callback synchronization, and versioned raw
+PCM transport implemented; Wear OS sender and hardware validation pending.**
 
 Wear OS duplex capture. This is where platform reality bites: sample-rate lies,
 automatic gain control, buffer underruns, and the fact that two hours of
