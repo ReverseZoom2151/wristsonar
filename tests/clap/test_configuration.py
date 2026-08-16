@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from tests.clap.synth import synth_feature_set
 
 from wristsonar.clap.configuration import (
     CONFUSABLE_PAIRS,
@@ -23,6 +22,8 @@ from wristsonar.clap.configuration import (
     prototype_classifier,
 )
 from wristsonar.protocol import GroundTruth, Protocol, Split
+
+from .synth import synth_feature_set
 
 _TRAIN_PER_MODE = 30
 _TEST_PER_MODE = 30

@@ -7,7 +7,6 @@ import math
 
 import numpy as np
 import pytest
-from tests.clap.synth import SAMPLE_RATE, resonator_impulse_response, synth_clap
 
 from wristsonar.clap.configuration import MODE_PROTOTYPES, ClapMode
 from wristsonar.clap.resonance import (
@@ -18,6 +17,8 @@ from wristsonar.clap.resonance import (
     helmholtz_geometry_ratio,
 )
 from wristsonar.types import SPEED_OF_SOUND
+
+from .synth import SAMPLE_RATE, resonator_impulse_response, synth_clap
 
 
 @pytest.mark.parametrize("frequency", [500.0, 794.0, 1063.0, 1562.0])

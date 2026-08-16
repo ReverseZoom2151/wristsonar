@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import numpy as np
-from tests.clap.synth import SAMPLE_RATE, synth_recording
 
 from wristsonar.clap.configuration import ClapMode
 from wristsonar.clap.detect import detect_impulses
+
+from .synth import SAMPLE_RATE, synth_recording
 
 _MODES = [
     ClapMode.A1PLUS,

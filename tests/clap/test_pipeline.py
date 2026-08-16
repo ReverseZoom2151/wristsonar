@@ -6,7 +6,6 @@ import itertools
 
 import numpy as np
 import pytest
-from tests.clap.synth import SAMPLE_RATE, synth_feature_set, synth_recording
 
 from wristsonar.clap.capacity import (
     arm_pose_bits,
@@ -28,6 +27,8 @@ from wristsonar.clap.resonance import (
     fit_resonance,
 )
 from wristsonar.protocol import GroundTruth, Protocol, Split
+
+from .synth import SAMPLE_RATE, synth_feature_set, synth_recording
 
 _PROTOCOL = Protocol(
     split=Split.WITHIN_SESSION,
