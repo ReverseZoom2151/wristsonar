@@ -1,7 +1,9 @@
 # Architecture
 
-Five layers, in the order data flows through them. Most of them do not exist
-yet. This document says which, and marks the rest clearly as intent.
+Five layers, in the order data flows through them. The offline and host-side
+layers are implemented; the Wear OS transport and a trained public checkpoint
+remain external validation work. This document distinguishes those states so
+the architecture is never mistaken for a live device result.
 
 ## The shape of the thing
 
@@ -30,7 +32,7 @@ was produced under. See EVALUATION.md.
 | Model input | `wristsonar.model` | Written; training needs public data |
 | Calibration | `wristsonar.eval.calibration` | Written |
 | Capture health | `wristsonar.capture` | Written; needs Wear OS transport |
-| Sinks | `wristsonar.runtime` | JSONL written; OpenXR/Blender pending |
+| Host inference and sinks | `wristsonar.runtime` | Capture wire format, strict inference, JSONL/TCP and Blender written; OpenXR pending |
 
 Everything below marked as intent describes a design decision, not a
 description of running code. The repository tree is the authority on what
@@ -133,8 +135,8 @@ the point: what gets demonstrated is what gets measured.
 
 ## Sink layer
 
-The portable `PoseFrame` and JSON Lines sink are written. OpenXR and Blender
-adapters remain pending.
+The portable `PoseFrame`, versioned capture wire format, strict host inference,
+JSON Lines/TCP sinks and Blender adapter are written. OpenXR remains pending.
 
 OpenXR hand-joint output makes the system immediately useful inside existing XR
 software without a bespoke integration. Blender is the demo, because a hand
@@ -156,9 +158,9 @@ argument of the project rather than a component of it.
 
 ## Data
 
-Dataset ingest is not written. It is documented separately in DATA.md, which
-covers the WatchHand release, its format, and what has to be verified about it
-before anything downstream can be trusted. The single largest risk in the
-project lives there: the release is echo profiles rather than raw audio, and if
-those profiles were produced by processing that cannot be reproduced from a live
-device, the capture layer and the model layer will never meet. See ROADMAP.md.
+Dataset ingest is written and manifest-gated. DATA.md covers the WatchHand
+release, its format, and what must be verified before anything downstream can
+be trusted. The single largest risk remains: the release is echo profiles rather
+than raw audio, and if those profiles were produced by processing that cannot be
+reproduced from a live device, the capture layer and model layer will never meet.
+See ROADMAP.md.
