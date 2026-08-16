@@ -24,13 +24,13 @@ was produced under. See EVALUATION.md.
 |---|---|---|
 | Core types | `wristsonar.types` | Written |
 | Protocol | `wristsonar.protocol` | Written |
-| Signal | `wristsonar.signal` | In progress |
-| Evaluation | `wristsonar.eval` | In progress |
-| Data ingest | not yet | Intent only |
-| Model | not yet | Intent only |
-| Calibration | not yet | Intent only |
-| Capture | not yet | Intent only |
-| Sinks | not yet | Intent only |
+| Signal | `wristsonar.signal` | Written and synthetic-verified |
+| Evaluation | `wristsonar.eval` | Written |
+| Data ingest | `wristsonar.data` | Written, manifest-gated |
+| Model input | `wristsonar.model` | Written; training needs public data |
+| Calibration | `wristsonar.eval.calibration` | Written |
+| Capture health | `wristsonar.capture` | Written; needs Wear OS transport |
+| Sinks | `wristsonar.runtime` | JSONL written; OpenXR/Blender pending |
 
 Everything below marked as intent describes a design decision, not a
 description of running code. The repository tree is the authority on what
@@ -59,7 +59,10 @@ systems needs no remapping table.
 
 ## Capture layer
 
-Intent. Not written.
+The device-independent capture contract is written. `DuplexValidator` rejects
+streams that silently resample 48 kHz audio, change the 600-sample chirp frame,
+or contain discontinuities. The Android transport remains pending hardware
+validation.
 
 A Wear OS application that plays and records simultaneously. The hard parts are
 duplex timing, disabling automatic gain control and noise suppression where the
@@ -77,7 +80,7 @@ build order. See ROADMAP.md, phase 3.
 
 ## Signal layer
 
-In progress.
+Written and property-tested against synthetic echoes with known ranges.
 
 Pure functions, no device required, fully testable offline: chirp synthesis,
 matched filtering, echo-profile construction, differential profiles, and
@@ -98,7 +101,9 @@ known delay and amplitude.
 
 ## Model layer
 
-Intent. Not written.
+Written as a causal 2 by 60 by 96 window builder plus a compact optional Torch
+CNN baseline. The public dataset must still be downloaded and its landmark
+sidecars generated before any training claim can be made.
 
 A small vision transformer or CNN over the echo-profile image, starting by
 reproducing the published FastViT-T12 setup on the WatchHand data. The rule for
@@ -110,7 +115,8 @@ Output is twenty-one joints in three dimensions, wrist-relative, as a `HandPose`
 
 ## Calibration layer
 
-Intent. Not written.
+Written in `wristsonar.eval.calibration` as a reported axis, not a hidden
+fine-tuning setting.
 
 The field norm is roughly two minutes of per-user fine-tuning, and it buys a
 lot: EchoWrist goes from 12.2 mm cold to 6.92 mm after one minute, plateauing at
@@ -127,7 +133,8 @@ the point: what gets demonstrated is what gets measured.
 
 ## Sink layer
 
-Intent. Not written.
+The portable `PoseFrame` and JSON Lines sink are written. OpenXR and Blender
+adapters remain pending.
 
 OpenXR hand-joint output makes the system immediately useful inside existing XR
 software without a bespoke integration. Blender is the demo, because a hand
@@ -137,7 +144,7 @@ the plan's diagram and is the cheapest way to make the thing an instrument.
 
 ## Evaluation layer
 
-In progress, and the actual product.
+Written, and the actual product.
 
 `wristsonar.eval` covers split construction with leakage assertions, metrics
 including MPJPE, PA-MPJPE, PCK and per-joint breakdowns with fingertips called

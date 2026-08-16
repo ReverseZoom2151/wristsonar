@@ -103,12 +103,13 @@ wrist and leaves what moved.
 
 ## Where it stands
 
-Early. The contracts, the signal layer, the evaluation harness and the clap
-analysis are being built now. Nothing has been trained, and no result exists
-yet, honest or otherwise.
+The offline substrate is built: data integrity, signal processing, evaluation,
+landmark preparation, causal model inputs, checkpoint provenance, capture
+health checks and portable pose frames. Nothing has been trained on WatchHand
+yet, and no benchmark result exists, honest or otherwise.
 
-The evaluation harness is deliberately being built before the model. A
-benchmark that arrives after the model is a benchmark shaped by the model.
+The evaluation harness preceded training deliberately. A benchmark that arrives
+after the model is a benchmark shaped by the model.
 
 The largest open risk is whether the public WatchHand dataset ships raw audio
 or precomputed echo profiles. If it is profiles and the preprocessing is not
