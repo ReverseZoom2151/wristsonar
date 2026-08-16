@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
+from socket import socket
 
 import numpy as np
 from numpy.typing import NDArray
@@ -19,6 +20,7 @@ __all__ = [
     "WireError",
     "decode_raw_pcm",
     "encode_raw_pcm",
+    "recv_raw_pcm",
 ]
 
 _MAGIC = b"WSAR"
@@ -91,3 +93,39 @@ def decode_raw_pcm(payload: bytes) -> RawPcmWireFrame:
         return RawPcmWireFrame(samples, timestamp_ns, sample_rate)
     except ValueError as error:
         raise WireError(str(error)) from error
+
+
+def recv_raw_pcm(connection: socket) -> RawPcmWireFrame:
+    """Read one whole frame from TCP, regardless of its packet boundaries.
+
+    TCP is a byte stream. A single ``recv`` is permitted to return half a
+    header or several audio frames, so using it as a message boundary silently
+    corrupts audio. This helper reads the fixed header first, then exactly the
+    signed-16-bit payload count stated by that header.
+    """
+    header = _recv_exact(connection, _HEADER.size)
+    if header is None:
+        raise EOFError("peer closed before a raw PCM header")
+    magic, version, _sample_rate, _timestamp_ns, count = _HEADER.unpack(header)
+    if magic != _MAGIC:
+        raise WireError(f"wrong magic {magic!r}")
+    if version != _VERSION:
+        raise WireError(f"unsupported raw PCM wire version {version}")
+    if not 1 <= count <= _MAX_SAMPLES:
+        raise WireError(f"invalid sample count {count}")
+    body = _recv_exact(connection, count * np.dtype("<i2").itemsize)
+    if body is None:
+        raise EOFError("peer closed in the middle of a raw PCM frame")
+    return decode_raw_pcm(header + body)
+
+
+def _recv_exact(connection: socket, size: int) -> bytes | None:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = connection.recv(remaining)
+        if not chunk:
+            return None
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)

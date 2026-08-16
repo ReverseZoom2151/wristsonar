@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import struct
+from socket import socketpair
+from threading import Thread
 
 import numpy as np
 import pytest
@@ -12,6 +14,7 @@ from wristsonar.capture.wire import (
     WireError,
     decode_raw_pcm,
     encode_raw_pcm,
+    recv_raw_pcm,
 )
 
 
@@ -55,3 +58,21 @@ def test_rejects_big_endian_or_empty_samples_at_the_construction_boundary() -> N
         RawPcmWireFrame(np.asarray([1], dtype=">i2"), 0, 48_000)
     with pytest.raises(ValueError, match=r"1\.\.4096"):
         RawPcmWireFrame(np.asarray([], dtype="<i2"), 0, 48_000)
+
+
+def test_tcp_reader_reassembles_a_frame_split_across_packets() -> None:
+    left, right = socketpair()
+    payload = encode_raw_pcm(_frame())
+    try:
+        def send_split() -> None:
+            left.sendall(payload[:7])
+            left.sendall(payload[7:])
+
+        sender = Thread(target=send_split)
+        sender.start()
+        decoded = recv_raw_pcm(right)
+        sender.join()
+        np.testing.assert_array_equal(decoded.samples, _frame().samples)
+    finally:
+        left.close()
+        right.close()
