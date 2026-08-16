@@ -21,6 +21,9 @@ dev = [
 [project.urls]
 Repository = "https://github.com/ReverseZoom2151/wristsonar"
 
+[project.scripts]
+wristsonar = "wristsonar.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
