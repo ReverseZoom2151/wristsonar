@@ -23,8 +23,9 @@ download and run, anywhere. The field publishes datasets and keeps its weights.
 
 There is also a measurement problem underneath that, and it is the more
 interesting one. Range resolution for this kind of sensing is `c / 2B`. With
-the roughly 3 kHz of usable inaudible bandwidth that consumer hardware allows,
-that is **5.7 cm**, which is wider than a hand. So a system reporting 4.81 mm
+the roughly 3 kHz of usable bandwidth that consumer hardware allows above the
+18 kHz floor, that is **5.7 cm**, which is wider than a hand. So one reporting
+4.81 mm
 is not resolving geometry. It is regressing a coarse echo signature onto the
 low-dimensional manifold that human hands actually occupy, because tendon
 coupling means twenty joints have far fewer than sixty effective degrees of
@@ -54,14 +55,19 @@ nothing needs downloading and no watch is required to develop against it.
 ## What a result looks like
 
 ```text
-14.88 mm  [split=cross-user zero-shot n=40 gt=depth-tracker data=watchhand@v1]
+14.88 mm  [split=cross-user zero-shot n=24 gt=video-fitted data=watchhand@v1]
 ```
 
 That string is what a `Measurement` prints. There is no code path that produces
 a reportable number without the protocol attached, because `Measurement` cannot
 be constructed without one and `Protocol` refuses a dataset without a version.
 
-Four splits, and a report shows them together or not at all:
+Four splits. A report covers exactly one of them, because rows inside a
+table have to be comparable for the comparison to mean anything, and a
+cross-user model row beside a within-session baseline row would not be. The
+container that renders all four side by side is not built yet, so reporting
+the full set is currently a matter of discipline rather than something the
+code enforces:
 
 | Split | What it tests |
 | --- | --- |
@@ -87,7 +93,7 @@ smartwatch speaker  ->  18 to 21 kHz FMCW chirp, 12.5 ms, about 80 per second
 smartwatch mic      ->  echoes off the hand, 10 cm away
 signal layer        ->  matched filter, range-resolved echo profiles, differential
 model               ->  21 joints in 3D, wrist relative
-sinks               ->  OpenXR, Blender, WebSocket
+sinks               ->  JSON Lines over stdout or TCP, and Blender
 ```
 
 Putting the sensor on the same arm as the hand is what makes this tractable. A
