@@ -32,6 +32,7 @@ def test_pose_windows_are_causal_and_use_the_aligned_previous_label() -> None:
     assert examples
     assert examples[0].features.shape == (2, 60, 16)
     assert examples[0].target.shape == (21, 3)
+    assert examples[0].participant == "study1/sub1"
     assert examples[0].device == "unknown-device"
     assert examples[0].timestamp_s < 0.8
     assert examples[-1].target[1, 0] in (1.0, 2.0)

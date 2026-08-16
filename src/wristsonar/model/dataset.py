@@ -92,7 +92,14 @@ class PoseWindows:
             yield WindowExample(
                 features=features,
                 target=targets[label],
-                participant=f"sub{session.ref.participant}",
+                # Participant numbering restarts in later studies.  `sub1`
+                # from Study 1 and `sub1` from Study 3 are not known to be
+                # the same person, so an identifier without the study would
+                # fabricate a cross-user relationship and can leak a person
+                # across an apparently leave-one-out split.
+                participant=(
+                    f"study{session.ref.study.value}/sub{session.ref.participant}"
+                ),
                 session=session.ref.identity,
                 device=(
                     session.ref.device.value

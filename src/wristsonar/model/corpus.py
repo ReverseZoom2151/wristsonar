@@ -134,7 +134,14 @@ class SessionWindowSource:
 
     @property
     def participants(self) -> tuple[str, ...]:
-        return tuple(sorted({f"sub{ref.participant}" for ref in self.refs}))
+        return tuple(
+            sorted(
+                {
+                    f"study{ref.study.value}/sub{ref.participant}"
+                    for ref in self.refs
+                }
+            )
+        )
 
     def iter_examples(self) -> Iterator[WindowExample]:
         """Load one verified session at a time, never the whole release."""
