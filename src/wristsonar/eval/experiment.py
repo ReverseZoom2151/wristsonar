@@ -20,6 +20,8 @@ from numpy.typing import NDArray
 
 from wristsonar.eval.baselines import Baseline, default_baselines, evaluate_baselines
 from wristsonar.eval.guard import (
+    GuardBinding,
+    GuardFinding,
     GuardName,
     GuardReport,
     Waiver,
@@ -27,6 +29,7 @@ from wristsonar.eval.guard import (
     check_label_distribution_match,
     check_participant_concentration,
     run_guards,
+    split_fingerprint,
 )
 from wristsonar.eval.metrics import Alignment, PoseArray, evaluate, joint_errors
 from wristsonar.eval.report import Report
@@ -75,6 +78,25 @@ class ExperimentResult:
             )
         if self.prediction_sha256 != _prediction_digest(self.predictions):
             raise ExperimentError("prediction digest does not match the array")
+        # The report carries guards and the guards carry the split they were
+        # run on. Checking the two against each other here is what stops one
+        # fold's guards from being attached to another fold's numbers, which
+        # the rendered report has no way of showing.
+        guards = self.report.guards
+        if guards is None:
+            raise ExperimentError(
+                "an experiment result must carry its guard report; a result "
+                "with no guards is a number with nothing checking it"
+            )
+        if (
+            guards.binding.split_name != self.indices.name
+            or guards.binding.n_test != self.indices.n_test
+        ):
+            raise ExperimentError(
+                f"the guard report describes {guards.binding.split_name!r} with "
+                f"{guards.binding.n_test} held-out samples, but this result is "
+                f"{self.indices.name!r} with {self.indices.n_test}"
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Machine-readable result that names the exact held-out examples."""
@@ -198,6 +220,7 @@ def run_experiment(
         dataset,
         indices,
         per_sample_error,
+        protocol,
         waivers=waivers,
         raise_on_violation=False,
     )
@@ -244,7 +267,7 @@ def run_cross_user_experiment(
     all_indices: list[NDArray[np.intp]] = []
     all_predictions: list[PoseArray] = []
     baseline_predictions: dict[str, list[PoseArray]] = {}
-    label_findings = []
+    label_findings: list[GuardFinding] = []
 
     for fold in folds:
         prediction = np.asarray(
@@ -278,6 +301,7 @@ def run_cross_user_experiment(
             dataset,
             fold,
             fold_error,
+            protocol,
             waivers=waivers,
             raise_on_violation=False,
         )
@@ -312,6 +336,7 @@ def run_cross_user_experiment(
                 dataset,
                 fold.train,
                 fold.test,
+                split=fold.split,
                 waiver=by_guard.get(GuardName.SINGLE_SUBJECT_LABEL_MATCH),
             )
         )
@@ -336,23 +361,44 @@ def run_cross_user_experiment(
         axis=1
     )
     clusters = [
-        f"{dataset.meta[int(index)].participant}/{dataset.meta[int(index)].session}"
+        f"{dataset.meta[int(index)].participant_key}/"
+        f"{dataset.meta[int(index)].session_key}"
         for index in test_indices
     ]
+    # The aggregate is not one SplitIndices, so its binding is built from the
+    # folds it is made of. Every fold's fingerprint goes in, which is what ties
+    # this guard report to this exact sweep rather than to any cross-user run.
+    fingerprint = hashlib.sha256(
+        "".join(
+            split_fingerprint(dataset, fold_result.indices)
+            for fold_result in fold_results
+        ).encode("utf-8")
+    ).hexdigest()
     aggregate_guards = GuardReport(
         findings=(
             check_participant_concentration(
                 dataset,
                 test_indices,
+                split=Split.CROSS_USER,
                 waiver=by_guard.get(GuardName.PARTICIPANT_CONCENTRATION),
             ),
             *label_findings,
             check_evaluation_size(
                 aggregate_errors,
                 clusters,
+                split=Split.CROSS_USER,
                 waiver=by_guard.get(GuardName.EVALUATION_SIZE),
             ),
-        )
+        ),
+        binding=GuardBinding(
+            split=Split.CROSS_USER,
+            split_name=f"{len(fold_results)}-fold cross-user aggregate",
+            dataset=protocol.dataset,
+            dataset_version=protocol.dataset_version,
+            n_train=int(sum(f.indices.n_train for f in fold_results)),
+            n_test=int(test_indices.size),
+            fingerprint=fingerprint,
+        ),
     )
     report.set_guards(aggregate_guards)
     return CrossUserExperimentResult(

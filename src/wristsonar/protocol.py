@@ -80,6 +80,24 @@ class Split(Enum):
         """Whether this split alone supports a claim about a real system."""
         return self is not Split.WITHIN_SESSION
 
+    @property
+    def is_population(self) -> bool:
+        """Whether the split claims anything about people outside the test set.
+
+        CROSS_USER and CROSS_DEVICE do. WITHIN_SESSION and CROSS_SESSION do
+        not: both hold one person fixed on purpose, so a test set made of one
+        participant is the protocol working rather than a shortcut. The
+        shortcut-learning guards read this to decide which question they are
+        being asked, because a guard that fires on every honest within-user
+        split is a guard that gets switched off.
+        """
+        return self in (Split.CROSS_USER, Split.CROSS_DEVICE)
+
+    @property
+    def is_within_user(self) -> bool:
+        """The complement of is_population, named for how it reads at call sites."""
+        return not self.is_population
+
 
 WEAKEST_SPLIT = Split.WITHIN_SESSION
 
@@ -163,18 +181,26 @@ class Protocol:
         return self.calibration_minutes == 0.0
 
     def describe(self) -> str:
-        """One line, suitable for stamping onto any table of numbers."""
+        """One line, suitable for stamping onto any table of numbers.
+
+        Notes are printed rather than held back. metrics.evaluate writes the
+        alignment into notes, and an alignment that is recorded but never
+        rendered is an alignment nobody can see: a Procrustes-aligned figure
+        would otherwise sit in the same column as a root-aligned one with no
+        visible marker at all.
+        """
         cal = (
             "zero-shot"
             if self.is_zero_shot
             else f"{self.calibration_minutes:g} min calibration"
         )
         ood = " held-out-poses" if self.held_out_poses else ""
+        note = f" notes={self.notes}" if self.notes else ""
         return (
             f"split={self.split.name.lower().replace('_', '-')} "
             f"{cal} n={self.subjects} "
             f"gt={self.ground_truth.value} "
-            f"data={self.dataset}@{self.dataset_version}{ood}"
+            f"data={self.dataset}@{self.dataset_version}{ood}{note}"
         )
 
     def at_calibration(self, minutes: float) -> Protocol:
@@ -215,13 +241,21 @@ class Measurement:
     def comparable_to(self, other: Measurement) -> bool:
         """Whether two measurements answer the same question.
 
-        Same split, same ground truth, same calibration budget, same units.
-        Dataset may differ, since cross-dataset comparison is legitimate as
-        long as everything else is held.
+        Same split, same ground truth, same calibration budget, same units,
+        same notes. Dataset may differ, since cross-dataset comparison is
+        legitimate as long as everything else is held.
+
+        Notes are part of the test rather than free text alongside it because
+        metrics.evaluate records the alignment there. A Procrustes-aligned
+        MPJPE and a root-aligned MPJPE are different claims, and without this
+        clause they would share a column with nothing marking the difference.
+        Structured comparability of alignment and PCK threshold is enforced one
+        level up, by MetricSet.comparable_to, which does not depend on a string.
         """
         return (
             self.unit == other.unit
             and self.protocol.split is other.protocol.split
             and self.protocol.ground_truth is other.protocol.ground_truth
             and self.protocol.calibration_minutes == other.protocol.calibration_minutes
+            and self.protocol.notes == other.protocol.notes
         )

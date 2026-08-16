@@ -21,13 +21,17 @@ A curve still falling at twenty minutes means the deployed accuracy depends on
 how patient the user is, which is a product fact and belongs in the abstract.
 
 Where the calibration data comes from matters as much as how much of it there
-is. Two honest choices are made here and neither is configurable into
+is. Three honest choices are made here and none is configurable into
 dishonesty. Calibration samples are taken in timestamp order from the start of
-the held in pool, because a real enrolment is the first two minutes a user
-gives you rather than a sample spread evenly across everything they will ever
-do. And the pool is asserted disjoint from the test set, because drawing
-calibration frames from the frames you are about to score on is a leak that
-produces an extremely convincing curve.
+each user's held in pool, because a real enrolment is the first two minutes a
+user gives you rather than a sample spread evenly across everything they will
+ever do. The budget is per user rather than global: two minutes means two
+minutes each, and spending it in global recording order would hand the whole
+budget to whoever recorded earliest and then report the result as per user
+calibration. And the pool is asserted disjoint from the test set and drawn from
+the test participants, because calibrating on the frames you are about to score
+is a leak that produces an extremely convincing curve, and calibrating on
+somebody else's frames is not calibration at all.
 """
 
 from __future__ import annotations
@@ -81,6 +85,13 @@ class CalibrationPoint:
 
     minutes_requested: float
     minutes_achieved: float
+    """Minutes given to the user who got the least.
+
+    The point of the axis is what a user gets, so the worst served test
+    participant is the honest figure. Reporting the mean would let one person's
+    long enrolment cover for another person having none.
+    """
+
     n_calibration_samples: int
     metrics: MetricSet
     truncated: bool = False
@@ -236,17 +247,18 @@ def sweep_calibration(
     than raw frames will have a much larger value and getting it wrong
     silently rescales the entire x axis.
 
-    Each budget moves the first n samples of the held in pool, in timestamp
-    order, into training. The protocol for each point is stamped with its own
-    calibration_minutes through Protocol.at_calibration, so a Measurement
-    lifted off any rung of this curve still says how much of the user's time
-    it cost.
+    Each budget moves the first n samples of each test participant's held in
+    pool, in timestamp order, into training, where n is the budget. The
+    protocol for each point is stamped with its own calibration_minutes through
+    Protocol.at_calibration, so a Measurement lifted off any rung of this curve
+    still says how much of the user's time it cost.
     """
     if sample_seconds <= 0:
         raise ValueError("sample_seconds must be positive")
     if not budgets:
         raise ValueError("a calibration sweep needs at least one budget")
 
+    test_people = set(dataset.participant_of(indices.test))
     pool = (
         _default_pool(dataset, indices)
         if calibration_pool is None
@@ -261,10 +273,38 @@ def sweep_calibration(
                 f"are about to score produces a very convincing curve and a "
                 f"meaningless one."
             )
-        order = np.argsort(
-            [dataset.meta[int(i)].timestamp_s for i in pool], kind="stable"
+        # An explicitly supplied pool is checked against the people being
+        # tested. Frames from anyone else are extra training data, and calling
+        # extra training data per-user calibration overstates what a user's own
+        # two minutes bought by however much the other person's data was worth.
+        outsiders = sorted(
+            {
+                dataset.meta[int(i)].participant
+                for i in pool
+                if dataset.meta[int(i)].participant not in test_people
+            }
         )
-        pool = pool[order]
+        if outsiders:
+            raise LeakageError(
+                f"the calibration pool for {indices.name!r} contains frames "
+                f"from {outsiders}, who are not in the test set "
+                f"({sorted(test_people)}). Per-user calibration means the "
+                f"user's own data; anyone else's is training data under "
+                f"another name."
+            )
+
+    by_person: dict[str, IndexArray] = {}
+    for person in sorted(test_people):
+        own = np.asarray(
+            [i for i in pool if dataset.meta[int(i)].participant == person],
+            dtype=np.intp,
+        )
+        if own.size:
+            order = np.argsort(
+                [dataset.meta[int(i)].timestamp_s for i in own], kind="stable"
+            )
+            own = own[order]
+        by_person[person] = own
 
     truth = dataset.poses[indices.test]
     points: list[CalibrationPoint] = []
@@ -279,9 +319,15 @@ def sweep_calibration(
                 f"that is expected: pass calibration_pool explicitly, and "
                 f"accept that the result is no longer zero-shot cross-user."
             )
-        taken = min(wanted, int(pool.size))
-        extra = pool[:taken]
-        achieved = taken * sample_seconds / 60.0
+        chunks = [own[: min(wanted, int(own.size))] for own in by_person.values()]
+        extra = (
+            np.concatenate(chunks)
+            if chunks
+            else np.asarray([], dtype=np.intp)
+        )
+        taken = int(extra.size)
+        per_person = [int(chunk.size) for chunk in chunks]
+        achieved = (min(per_person) if per_person else 0) * sample_seconds / 60.0
         train = (
             indices.train
             if taken == 0
@@ -295,7 +341,7 @@ def sweep_calibration(
                 minutes_achieved=achieved,
                 n_calibration_samples=taken,
                 metrics=evaluate(pred, truth, point_protocol, alignment=alignment),
-                truncated=taken < wanted,
+                truncated=any(count < wanted for count in per_person),
             )
         )
     return CalibrationCurve(points=tuple(points), split_name=indices.name)

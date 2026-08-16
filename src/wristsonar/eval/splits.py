@@ -23,6 +23,20 @@ session split wearing a different label.
 
 Every constructor here calls assert_no_leakage before returning, and that
 function raises. It does not warn. A warning in a long log is not a control.
+
+Identity is normalised before it is compared, because the two identifiers leak
+is the one that matters most and its commonest form is a spelling difference
+rather than a conspiracy: "p1" and "P1", or a trailing space. Case and
+whitespace variants of one identifier are rejected at Dataset construction
+rather than being silently unified, so the dataset is fixed once at its source
+instead of every consumer having to remember to fold the case.
+
+Sessions are namespaced by participant. Two people who both call their first
+recording "s1" are not sharing a session, and without namespacing a within
+session split cut on "s1" would span two people, which is not a within session
+split at all. Devices are deliberately not namespaced: a device model is shared
+across people by definition, and that sharing is what a cross device split cuts
+along.
 """
 
 from __future__ import annotations
@@ -46,10 +60,22 @@ __all__ = [
     "cross_device_split",
     "cross_session_split",
     "cross_user_folds",
+    "normalise_identity",
     "within_session_split",
 ]
 
 IndexArray = NDArray[np.intp]
+
+
+def normalise_identity(text: str) -> str:
+    """The comparison form of a participant, session or device identifier.
+
+    Case folded with internal whitespace collapsed. This is not cosmetic: an
+    unnormalised identifier means "p1" and "P1" are two people, which produces
+    two clean cross user folds out of one person's data and moves the headline
+    in the flattering direction.
+    """
+    return " ".join(text.split()).casefold()
 
 
 class LeakageError(AssertionError):
@@ -77,8 +103,28 @@ class SampleMeta:
 
     def __post_init__(self) -> None:
         for field_name in ("participant", "session", "device"):
-            if not getattr(self, field_name):
+            if not getattr(self, field_name).strip():
                 raise ValueError(f"SampleMeta.{field_name} must be non empty")
+
+    @property
+    def participant_key(self) -> str:
+        """Identity for comparison. Display uses the field, comparison uses this."""
+        return normalise_identity(self.participant)
+
+    @property
+    def device_key(self) -> str:
+        return normalise_identity(self.device)
+
+    @property
+    def session_key(self) -> str:
+        """The session identifier namespaced by its participant.
+
+        A session belongs to one person by definition, so a bare session label
+        is only unique inside that person's data. Two participants who both
+        name a session "s1" would otherwise share it, and a within session
+        split on that shared label would quietly span both people.
+        """
+        return f"{self.participant_key}/{normalise_identity(self.session)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +154,31 @@ class Dataset:
                 f"features and meta disagree: {self.features.shape[0]} rows "
                 f"against {len(self.meta)}"
             )
+        self._reject_aliased_identifiers("participant")
+        self._reject_aliased_identifiers("device")
+
+    def _reject_aliased_identifiers(self, field_name: str) -> None:
+        """Refuse a dataset where one identity is spelled two ways.
+
+        Raised here rather than folded away silently, because the fold would
+        have to be undone every time an identifier is printed and because the
+        dataset is the place the mistake can actually be corrected. Every other
+        function in this module may then compare identifiers exactly, knowing
+        that distinct spellings are distinct people, sessions or devices.
+        """
+        spellings: dict[str, set[str]] = {}
+        for row in self.meta:
+            value = getattr(row, field_name)
+            spellings.setdefault(normalise_identity(value), set()).add(value)
+        collided = {k: sorted(v) for k, v in spellings.items() if len(v) > 1}
+        if collided:
+            raise LeakageError(
+                f"the same {field_name} is recorded under more than one "
+                f"spelling: {collided}. Case and whitespace variants of one "
+                f"identifier are the commonest form of the two identifiers "
+                f"leak, and a split cut on them would put one "
+                f"{field_name} on both sides while every check passed."
+            )
 
     @classmethod
     def build(
@@ -134,7 +205,13 @@ class Dataset:
 
     @property
     def sessions(self) -> tuple[str, ...]:
-        return tuple(sorted({m.session for m in self.meta}))
+        """Participant-namespaced session keys, which is what a session is.
+
+        Not the raw labels. A raw label is unique only inside one person's
+        data, so returning raw labels here would hand every caller a key that
+        can silently name two people's recordings at once.
+        """
+        return tuple(sorted({m.session_key for m in self.meta}))
 
     @property
     def devices(self) -> tuple[str, ...]:
@@ -144,7 +221,8 @@ class Dataset:
         return tuple(self.meta[int(i)].participant for i in idx)
 
     def session_of(self, idx: IndexArray) -> tuple[str, ...]:
-        return tuple(self.meta[int(i)].session for i in idx)
+        """Session keys, namespaced by participant. See Dataset.sessions."""
+        return tuple(self.meta[int(i)].session_key for i in idx)
 
     def device_of(self, idx: IndexArray) -> tuple[str, ...]:
         return tuple(self.meta[int(i)].device for i in idx)
@@ -156,11 +234,17 @@ class Dataset:
         session: str | None = None,
         device: str | None = None,
     ) -> IndexArray:
+        """Select samples by participant, session key or device.
+
+        session is matched against SampleMeta.session_key, the namespaced form
+        returned by Dataset.sessions, so that no selection can pick up two
+        participants who happened to use the same session label.
+        """
         keep = [
             i
             for i, m in enumerate(self.meta)
             if (participant is None or m.participant == participant)
-            and (session is None or m.session == session)
+            and (session is None or m.session_key == session)
             and (device is None or m.device == device)
         ]
         return np.asarray(keep, dtype=np.intp)
@@ -188,6 +272,28 @@ class SplitIndices:
             raise ValueError(f"split {self.name} has an empty training set")
         if self.test.size == 0:
             raise ValueError(f"split {self.name} has an empty test set")
+        # Negative indices are rejected before anything else is compared.
+        # NumPy resolves -1 to the last sample only at indexing time, so
+        # train=[0..5] with test=[-1] looks disjoint to intersect1d, passes the
+        # upper bound check, and then aliases sample 5 onto both sides of the
+        # split. A split cannot be checked in a form that does not yet mean
+        # what it will mean when it is used.
+        for half, idx in (("train", self.train), ("test", self.test)):
+            if idx.size and int(idx.min()) < 0:
+                raise LeakageError(
+                    f"split {self.name} uses negative indices in {half}, for "
+                    f"example {int(idx.min())}. A negative index resolves to a "
+                    f"sample from the far end of the dataset only when it is "
+                    f"used, so it defeats both the overlap check and the bounds "
+                    f"check and can alias one sample onto both sides."
+                )
+            unique = np.unique(idx)
+            if unique.size != idx.size:
+                raise LeakageError(
+                    f"split {self.name} repeats {idx.size - unique.size} sample "
+                    f"indices in {half}. A repeated sample is weighted twice in "
+                    f"whatever is computed from it."
+                )
         overlap = np.intersect1d(self.train, self.test)
         if overlap.size:
             raise LeakageError(
@@ -222,6 +328,19 @@ def assert_no_leakage(dataset: Dataset, indices: SplitIndices) -> None:
     why it is the weakest claim in the enum and why the report layer will not
     let it stand alone.
     """
+    min_index = min(int(indices.train.min()), int(indices.test.min()))
+    if min_index < 0:
+        raise LeakageError(
+            f"split {indices.name!r} uses negative index {min_index}, which "
+            f"aliases onto a sample at the far end of the dataset"
+        )
+    max_index = max(int(indices.train.max()), int(indices.test.max()))
+    if max_index >= dataset.n_samples:
+        raise LeakageError(
+            f"split {indices.name!r} indexes sample {max_index} but the "
+            f"dataset holds {dataset.n_samples}"
+        )
+
     if indices.split is Split.CROSS_USER:
         shared = set(dataset.participant_of(indices.train)) & set(
             dataset.participant_of(indices.test)
@@ -253,13 +372,6 @@ def assert_no_leakage(dataset: Dataset, indices: SplitIndices) -> None:
                 f"cross-device split {indices.name!r} leaks: devices "
                 f"{sorted(shared_devices)} appear on both sides."
             )
-
-    max_index = max(int(indices.train.max()), int(indices.test.max()))
-    if max_index >= dataset.n_samples:
-        raise LeakageError(
-            f"split {indices.name!r} indexes sample {max_index} but the "
-            f"dataset holds {dataset.n_samples}"
-        )
 
 
 def _checked(dataset: Dataset, indices: SplitIndices) -> SplitIndices:
@@ -334,7 +446,7 @@ def cross_session_split(
     own = dataset.indices_where(participant=participant)
     if own.size == 0:
         raise ValueError(f"no samples for participant {participant!r}")
-    sessions = sorted({dataset.meta[int(i)].session for i in own})
+    sessions = sorted({dataset.meta[int(i)].session_key for i in own})
     if len(sessions) < 2:
         raise ValueError(
             f"participant {participant!r} has only session {sessions[0]!r}; a "
@@ -349,11 +461,11 @@ def cross_session_split(
             f"session {held_out_session!r} is not a session of {participant!r}"
         )
     test = np.asarray(
-        [i for i in own if dataset.meta[int(i)].session == held_out_session],
+        [i for i in own if dataset.meta[int(i)].session_key == held_out_session],
         dtype=np.intp,
     )
     train = np.asarray(
-        [i for i in own if dataset.meta[int(i)].session != held_out_session],
+        [i for i in own if dataset.meta[int(i)].session_key != held_out_session],
         dtype=np.intp,
     )
     return _checked(
@@ -385,6 +497,15 @@ def cross_user_folds(
     good headline.
     """
     people = tuple(participants) if participants is not None else dataset.participants
+    keys = [normalise_identity(person) for person in people]
+    duplicated = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicated:
+        raise ValueError(
+            f"leave-one-user-out was asked to hold out {duplicated} more than "
+            f"once. Identical folds are not extra evidence: they weight one "
+            f"person twice in the aggregate and make the sweep look wider than "
+            f"the study is."
+        )
     if len(people) < 2:
         raise ValueError(
             "leave-one-user-out needs at least two participants; with one "

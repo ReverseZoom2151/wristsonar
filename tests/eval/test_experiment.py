@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,7 @@ def _waivers() -> list[Waiver]:
                 "Synthetic unit data exercises report assembly, not a hardware claim."
             ),
             approved_by="test-suite",
+            expires_on=date.today() + timedelta(days=30),
         )
         for guard in GuardName
     ]

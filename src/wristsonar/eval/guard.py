@@ -29,26 +29,44 @@ independent units, and quoting two decimal places of a millimetre off twenty
 four units is claiming a precision the data cannot support. The field quotes
 4.81 and 10.71 and 14.88 routinely.
 
-Switching a guard off requires a Waiver naming the guard, giving a reason of
-at least forty characters, and naming a person. The waiver is then printed in
-the report, in the results table, every time. This is intentional friction:
-the cheapest path must be to fix the split.
+Every guard is told which split it is judging, because the same observation is
+a shortcut under one protocol and the protocol working under another. A test
+set made of one participant is a fatal concentration on a cross user split and
+is the definition of a cross session split. A guard that fires on every honest
+within user split is a guard that gets ignored, and an ignored guard protects
+nothing, so the split is an argument rather than something each guard has to
+guess from the data.
+
+Switching a guard off requires a Waiver naming the guard, giving a reason with
+real content, naming a person, and setting an expiry date. The waiver is then
+printed in the report, in the results table, every time, and it stops
+suppressing the guard on its expiry date. The expiry is the part a deadline
+cannot defeat: a length floor is satisfied by typing for ten seconds, whereas
+an expiry means the guard comes back after the deadline has passed.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from enum import Enum
 
 import numpy as np
 from numpy.typing import NDArray
 
 from wristsonar.eval.splits import Dataset, IndexArray, SplitIndices
+from wristsonar.protocol import Protocol, Split
 
 __all__ = [
+    "MAX_WAIVER_DAYS",
     "MIN_WAIVER_REASON_CHARS",
+    "MIN_WAIVER_REASON_WORDS",
+    "POPULATION_MIN_CLUSTERS",
+    "WITHIN_USER_MIN_CLUSTERS",
+    "GuardBinding",
     "GuardFinding",
     "GuardName",
     "GuardReport",
@@ -57,10 +75,37 @@ __all__ = [
     "check_evaluation_size",
     "check_label_distribution_match",
     "check_participant_concentration",
+    "evaluation_clusters",
     "run_guards",
+    "split_fingerprint",
 ]
 
 MIN_WAIVER_REASON_CHARS = 40
+MIN_WAIVER_REASON_WORDS = 8
+"""Distinct words, not characters.
+
+Forty characters of anything is one held-down key. Requiring distinct words
+does not make a reason true, but it does make an empty reason cost about as
+much to write as a real one, which removes the only advantage the empty one
+had.
+"""
+
+MAX_WAIVER_DAYS = 90
+"""How long a waiver may suppress a guard before it has to be argued again."""
+
+POPULATION_MIN_CLUSTERS = 5
+"""Independent participant and session units required of a population split."""
+
+WITHIN_USER_MIN_CLUSTERS = 2
+"""Units required of a within user split, where the unit is a time block.
+
+A within user protocol holds out one session per fold by construction, so it
+has exactly one participant-and-session unit and the population floor of five
+can never be met. The floor is not lowered to make the number look better: the
+clusters it is measured over are contiguous time blocks, which are not
+independent, and check_evaluation_size says so in the finding rather than
+letting the resulting precision estimate pass for a real one.
+"""
 
 
 class GuardName(Enum):
@@ -80,20 +125,60 @@ class Waiver:
     guard: GuardName
     reason: str
     approved_by: str
+    expires_on: date
+    """The day this waiver stops working.
+
+    A guard switched off in the hour before a deadline stays off forever
+    unless something turns it back on, and nothing ever does. An expiry is the
+    something. It cannot be satisfied by typing faster, and the cost of
+    renewing it falls on the same person who chose to accept the risk.
+    """
 
     def __post_init__(self) -> None:
-        if len(self.reason.strip()) < MIN_WAIVER_REASON_CHARS:
+        reason = self.reason.strip()
+        if len(reason) < MIN_WAIVER_REASON_CHARS:
             raise ValueError(
                 f"a waiver for {self.guard.value} needs a reason of at least "
                 f"{MIN_WAIVER_REASON_CHARS} characters explaining why the "
                 f"shortcut this guard detects is not present; got "
-                f"{len(self.reason.strip())}"
+                f"{len(reason)}"
+            )
+        distinct = {word.strip(".,;:()").casefold() for word in reason.split()}
+        distinct.discard("")
+        if len(distinct) < MIN_WAIVER_REASON_WORDS:
+            raise ValueError(
+                f"a waiver for {self.guard.value} needs a reason of at least "
+                f"{MIN_WAIVER_REASON_WORDS} distinct words saying why the "
+                f"shortcut is not present in this evaluation set; got "
+                f"{len(distinct)}. A run of one character clears a length "
+                f"floor and explains nothing."
             )
         if not self.approved_by.strip():
             raise ValueError("a waiver must name the person accepting the risk")
+        today = date.today()
+        if self.expires_on <= today:
+            raise ValueError(
+                f"a waiver for {self.guard.value} expires on {self.expires_on}, "
+                f"which is not in the future. A waiver that is already expired "
+                f"suppresses nothing, and back-dating one is how a guard gets "
+                f"switched off permanently."
+            )
+        if self.expires_on > today + timedelta(days=MAX_WAIVER_DAYS):
+            raise ValueError(
+                f"a waiver may run for at most {MAX_WAIVER_DAYS} days; "
+                f"{self.expires_on} is further out than that. A guard that is "
+                f"off for a year is a guard that has been deleted."
+            )
+
+    def is_expired(self, today: date | None = None) -> bool:
+        return self.expires_on <= (today or date.today())
 
     def describe(self) -> str:
-        return f"WAIVED {self.guard.value} by {self.approved_by}: {self.reason.strip()}"
+        state = " (EXPIRED)" if self.is_expired() else ""
+        return (
+            f"WAIVED{state} {self.guard.value} by {self.approved_by} "
+            f"until {self.expires_on.isoformat()}: {self.reason.strip()}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,12 +193,15 @@ class GuardFinding:
 
     @property
     def blocking(self) -> bool:
-        return not self.passed and self.waiver is None
+        """Failing, and not suppressed by a waiver that is still in date."""
+        if self.passed:
+            return False
+        return self.waiver is None or self.waiver.is_expired()
 
     def describe(self) -> str:
         if self.passed:
             return f"pass  {self.guard.value}: {self.message}"
-        if self.waiver is not None:
+        if self.waiver is not None and not self.waiver.is_expired():
             return (
                 f"WAIVED {self.guard.value}: {self.message}\n"
                 f"         {self.waiver.describe()}"
@@ -133,11 +221,94 @@ class GuardViolation(Exception):  # noqa: N818
         )
 
 
+def split_fingerprint(dataset: Dataset, indices: SplitIndices) -> str:
+    """Content identity of one partition of one dataset.
+
+    Hashes the sample count, both index lists and every sample's participant,
+    session and device key. Two different splits, or the same split over
+    different metadata, cannot produce the same digest, which is what lets a
+    report refuse a GuardReport that was computed somewhere easier.
+    """
+    digest = hashlib.sha256()
+    digest.update(str(dataset.n_samples).encode("utf-8"))
+    digest.update(np.sort(indices.train).tobytes())
+    digest.update(np.sort(indices.test).tobytes())
+    for row in dataset.meta:
+        digest.update(
+            f"{row.participant_key}|{row.session_key}|{row.device_key}\n".encode()
+        )
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class GuardBinding:
+    """What a GuardReport was computed on.
+
+    Without this a GuardReport is a bag of findings that can be attached to
+    any result at all, including one from an easier split, and the attaching
+    is invisible. With it, a report can check that the guards in front of it
+    were run on the same dataset, the same split and the same held-out samples
+    as the rows it is about to headline.
+    """
+
+    split: Split
+    split_name: str
+    dataset: str
+    dataset_version: str
+    n_train: int
+    n_test: int
+    fingerprint: str
+
+    def describe(self) -> str:
+        return (
+            f"guards computed on {self.split_name} "
+            f"({self.split.name}, {self.n_test} held-out samples of "
+            f"{self.dataset}@{self.dataset_version}) "
+            f"fingerprint {self.fingerprint[:12]}"
+        )
+
+    def disagreement_with(self, protocol: Protocol) -> str | None:
+        """Why these guards do not describe a result under protocol, or None."""
+        if self.split is not protocol.split:
+            return (
+                f"the guards were run on a {self.split.name} split but the "
+                f"rows are {protocol.split.name}"
+            )
+        if self.dataset != protocol.dataset:
+            return (
+                f"the guards were run on dataset {self.dataset!r} but the rows "
+                f"are on {protocol.dataset!r}"
+            )
+        if self.dataset_version != protocol.dataset_version:
+            return (
+                f"the guards were run on {self.dataset}@{self.dataset_version} "
+                f"but the rows are on {protocol.dataset}@"
+                f"{protocol.dataset_version}"
+            )
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class GuardReport:
-    """Every guard's finding for one evaluation set."""
+    """Every guard's finding for one evaluation set, bound to that set.
+
+    Both fields are required. An empty findings tuple used to mean "no guard
+    found anything", which is indistinguishable from "no guard ever ran", and
+    the second one is the state an evaluation harness must never accept.
+    """
 
     findings: tuple[GuardFinding, ...]
+    binding: GuardBinding
+
+    def __post_init__(self) -> None:
+        present = {f.guard for f in self.findings}
+        missing = sorted(g.value for g in GuardName if g not in present)
+        if missing:
+            raise ValueError(
+                f"a guard report must contain a finding for every guard; "
+                f"missing {missing}. An empty or partial report is how a result "
+                f"passes with guards that were never run."
+            )
 
     @property
     def blocking(self) -> tuple[GuardFinding, ...]:
@@ -145,23 +316,32 @@ class GuardReport:
 
     @property
     def waived(self) -> tuple[GuardFinding, ...]:
-        return tuple(f for f in self.findings if not f.passed and f.waiver is not None)
+        return tuple(
+            f
+            for f in self.findings
+            if not f.passed and f.waiver is not None and not f.waiver.is_expired()
+        )
 
     @property
     def clean(self) -> bool:
         return not self.blocking and not self.waived
 
     def render(self) -> str:
-        return "\n".join(f.describe() for f in self.findings)
+        lines = [f"  {self.binding.describe()}"]
+        lines.extend(f.describe() for f in self.findings)
+        return "\n".join(lines)
 
     def to_json(self) -> list[dict[str, object]]:
         return [
             {
                 "guard": f.guard.value,
                 "passed": f.passed,
-                "waived": f.waiver is not None,
+                "waived": f.waiver is not None and not f.waiver.is_expired(),
                 "message": f.message,
                 "detail": dict(f.detail),
+                "split": self.binding.split.name,
+                "split_name": self.binding.split_name,
+                "fingerprint": self.binding.fingerprint,
             }
             for f in self.findings
         ]
@@ -185,17 +365,29 @@ def check_participant_concentration(
     dataset: Dataset,
     test: IndexArray,
     *,
+    split: Split,
     max_share: float = 0.5,
     waiver: Waiver | None = None,
 ) -> GuardFinding:
-    """Fire when one participant dominates the evaluation set.
+    """Fire when one participant dominates an evaluation that claims a population.
 
     max_share defaults to one half, which is already generous: a test set that
     is half one person is a study of that person with a control group.
 
-    For leave one user out this fires on every individual fold, and it is
-    supposed to. The quotable number from LOUO is the aggregate over folds, so
-    pass the concatenation of every fold's test indices, not one fold's.
+    Split aware, and this is the whole difficulty. On CROSS_USER and
+    CROSS_DEVICE the claim is about people who contributed nothing, so one
+    person filling the test set means the number is about that person. For
+    leave one user out this fires on every individual fold, and it is supposed
+    to: the quotable number from LOUO is the aggregate over folds, so pass the
+    concatenation of every fold's test indices, not one fold's.
+
+    On WITHIN_SESSION and CROSS_SESSION a single-participant test set is the
+    protocol rather than a defect, because both hold the person fixed on
+    purpose. Firing there would mean this guard fires on every honest within
+    user split, which is how a guard gets routinely waived and stops
+    protecting the case it exists for. It passes instead, and the finding
+    states in plain words that the number is about one named person, which is
+    the same fact stated where it is useful rather than where it is noise.
     """
     if test.size == 0:
         raise ValueError("cannot assess concentration of an empty test set")
@@ -210,7 +402,21 @@ def check_participant_concentration(
         "top_share": float(share),
         "n_participants": len(counts),
         "n_samples": int(test.size),
+        "split": split.name,
     }
+    if split.is_within_user:
+        return GuardFinding(
+            guard=GuardName.PARTICIPANT_CONCENTRATION,
+            passed=True,
+            message=(
+                f"{split.name} holds the person fixed by design, so a test set "
+                f"concentrated on {top_person!r} ({share:.0%} of "
+                f"{len(people)} samples, {len(counts)} participants) is the "
+                f"protocol rather than a shortcut. Nothing here supports a "
+                f"claim about anyone else; the cross-user split is what would."
+            ),
+            detail=detail,
+        )
     if share <= max_share:
         return GuardFinding(
             guard=GuardName.PARTICIPANT_CONCENTRATION,
@@ -250,6 +456,7 @@ def check_label_distribution_match(
     train: IndexArray,
     test: IndexArray,
     *,
+    split: Split,
     ratio: float = 0.20,
     waiver: Waiver | None = None,
 ) -> GuardFinding:
@@ -271,29 +478,74 @@ def check_label_distribution_match(
     fifth catches the case this guard is for, which is a test subject sitting
     almost on top of a training subject.
 
-    Participants appearing on both sides of the split are excluded from the
-    comparison set. On a within-user protocol the test poses matching that
-    person's own training poses is the protocol working, not a shortcut, and a
-    guard that fires on every within-user split is a guard that gets ignored.
+    Split aware, in the only way that keeps the guard honest.
 
-    A training set containing a single participant fails outright, without a
-    numeric test. There is no population to generalise over, so whatever the
-    protocol is called it is a single-subject study.
+    On a population split (CROSS_USER, CROSS_DEVICE) every training
+    participant is in the comparison set, including any that also appear in
+    the test set. An earlier version excluded those, which inverted the guard:
+    with the test set sitting on subject T0's pose cloud it fired at 0.00,
+    and moving a single one of T0's training frames into the test set made T0
+    an excluded participant, leaving the comparison to run against T1 and
+    pass at 1.07. Worse contamination produced a cleaner report. A participant
+    on both sides of a population split is now the finding, not an exemption
+    from it.
+
+    On a within user split (WITHIN_SESSION, CROSS_SESSION) the test poses
+    matching the same person's training poses is the protocol working, and
+    there is frequently no second training participant at all because
+    cross_session_split trains on one person by design. Running an inter
+    subject geometry test there produces a failure on every honest split,
+    which is a guard nobody reads. It passes with a finding that says what the
+    split does and does not support instead.
+
+    A population split with fewer than two training participants fails
+    outright, without a numeric test. There is no population to generalise
+    over, so whatever the protocol is called it is a single-subject study.
     """
     if train.size == 0 or test.size == 0:
         raise ValueError("label distribution check needs a non-empty split")
     test_people = set(dataset.participant_of(test))
     all_train_means = _mean_pose_per_participant(dataset, train)
-    # Participants who are on both sides are excluded from the comparison set.
-    # On a within-user protocol the test distribution matching that person's
-    # own training data is the protocol working as intended, not a shortcut.
-    # The question this guard asks is whether the test distribution collapses
-    # onto some other single subject.
-    train_means = {
-        person: mean
-        for person, mean in all_train_means.items()
-        if person not in test_people
-    }
+
+    if split.is_within_user:
+        return GuardFinding(
+            guard=GuardName.SINGLE_SUBJECT_LABEL_MATCH,
+            passed=True,
+            message=(
+                f"{split.name} is a within-user protocol, so the test poses "
+                f"sitting near the training poses of {sorted(test_people)} is "
+                f"the design rather than a subject-identity shortcut. This "
+                f"guard tests inter-subject collapse and has nothing to "
+                f"measure here; the cross-user split is where it bites."
+            ),
+            detail={
+                "n_train_participants": len(all_train_means),
+                "split": split.name,
+                "applicable": "no",
+            },
+        )
+
+    shared = sorted(test_people & set(all_train_means))
+    if shared:
+        return GuardFinding(
+            guard=GuardName.SINGLE_SUBJECT_LABEL_MATCH,
+            passed=False,
+            message=(
+                f"participants {shared} contribute to both the training and "
+                f"the test half of a {split.name} split. Recognising one of "
+                f"them is sufficient to score well, and the contamination "
+                f"flatters the number, so this is reported as the failure it "
+                f"is rather than excluded from the comparison."
+            ),
+            detail={
+                "n_train_participants": len(all_train_means),
+                "shared_participants": ", ".join(shared),
+                "split": split.name,
+            },
+            waiver=waiver,
+        )
+
+    train_means = all_train_means
     test_mean = dataset.poses[test].mean(axis=0)
 
     if len(train_means) < 2:
@@ -310,6 +562,7 @@ def check_label_distribution_match(
             detail={
                 "n_train_participants": len(all_train_means),
                 "n_comparison_participants": len(train_means),
+                "split": split.name,
             },
             waiver=waiver,
         )
@@ -379,8 +632,10 @@ def check_evaluation_size(
     errors_mm: NDArray[np.floating],
     cluster_ids: Sequence[str],
     *,
+    split: Split,
     reported_decimals: int = 2,
-    min_clusters: int = 5,
+    min_clusters: int | None = None,
+    cluster_kind: str = "participant and session pairs",
     waiver: Waiver | None = None,
 ) -> GuardFinding:
     """Fire when the evaluation set cannot support the precision being printed.
@@ -388,9 +643,13 @@ def check_evaluation_size(
     Two failure modes, one guard.
 
     Too few independent units. Frames at 80 per second are near duplicates, so
-    the independent unit is the session, not the frame. min_clusters defaults
-    to five, which is low and still catches the single-subject-five-sessions
-    shape of arXiv 2405.15085.
+    the independent unit is the session, not the frame. On a population split
+    min_clusters is POPULATION_MIN_CLUSTERS, which is low and still catches
+    the single-subject-five-sessions shape of arXiv 2405.15085. On a within
+    user split there is exactly one held-out session by construction, so the
+    caller clusters by contiguous time block instead and the floor is
+    WITHIN_USER_MIN_CLUSTERS; cluster_kind is then named in the finding so
+    nobody reads a block-based standard error as a session-based one.
 
     Too many digits. The standard error is computed across clusters, not
     across frames, because computing it across frames divides by a sample size
@@ -398,7 +657,16 @@ def check_evaluation_size(
     narrow. reported_decimals defaults to two because that is what the field
     prints: 4.81 mm, 10.71 mm, 14.88 mm. Most honest datasets in this field
     do not support two decimals, and saying so is the point.
+
+    A single cluster fails rather than raising. The standard error of one
+    observation is infinite, and an earlier version converted that infinity to
+    an integer and raised OverflowError from inside the guard, which is the
+    same as no guard at all once a caller wraps the call in a try.
     """
+    if min_clusters is None:
+        min_clusters = (
+            POPULATION_MIN_CLUSTERS if split.is_population else WITHIN_USER_MIN_CLUSTERS
+        )
     errors = np.asarray(errors_mm, dtype=np.float64)
     if errors.ndim == 2:
         errors = errors.mean(axis=1)
@@ -423,35 +691,48 @@ def check_evaluation_size(
         "n_samples": int(errors.size),
         "n_clusters": k,
         "reported_decimals": reported_decimals,
+        "cluster_kind": cluster_kind,
+        "min_clusters": min_clusters,
+        "split": split.name,
     }
 
-    if k < min_clusters:
+    if k < 2 or k < min_clusters:
         return GuardFinding(
             guard=GuardName.EVALUATION_SIZE,
             passed=False,
             message=(
-                f"{k} independent evaluation units (participant and session "
-                f"pairs), under the floor of {min_clusters}. The "
-                f"{int(errors.size)} frames are not independent samples; "
-                f"consecutive frames at frame rate are near duplicates."
+                f"{k} independent evaluation units ({cluster_kind}), under the "
+                f"floor of {max(2, min_clusters)}. The {int(errors.size)} "
+                f"frames are not independent samples; consecutive frames at "
+                f"frame rate are near duplicates, and the spread across one "
+                f"unit is not a standard error of anything."
             ),
             detail=detail,
             waiver=waiver,
         )
 
-    sem = float(np.std(cluster_means, ddof=1) / math.sqrt(k)) if k > 1 else float("inf")
+    sem = float(np.std(cluster_means, ddof=1) / math.sqrt(k))
     detail["cluster_sem_mm"] = sem
     justified = reported_decimals if sem <= 0.0 else math.floor(-math.log10(2.0 * sem))
     detail["justified_decimals"] = justified
+    caveat = (
+        ""
+        if split.is_population
+        else (
+            f" These {cluster_kind} come from one held-out session and are not "
+            f"independent of each other, so this standard error is optimistic "
+            f"and the digits it justifies are an upper bound."
+        )
+    )
 
     if reported_decimals <= justified:
         return GuardFinding(
             guard=GuardName.EVALUATION_SIZE,
             passed=True,
             message=(
-                f"{k} independent units, cluster standard error {sem:.3f} mm, "
-                f"which supports {justified} decimal places and "
-                f"{reported_decimals} are being printed"
+                f"{k} evaluation units ({cluster_kind}), cluster standard "
+                f"error {sem:.3f} mm, which supports {justified} decimal "
+                f"places and {reported_decimals} are being printed.{caveat}"
             ),
             detail=detail,
         )
@@ -460,25 +741,57 @@ def check_evaluation_size(
         passed=False,
         message=(
             f"{reported_decimals} decimal places are being printed but the "
-            f"cluster standard error of {sem:.3f} mm across {k} independent "
-            f"units supports only {justified}. The extra digits are noise "
-            f"presented as resolution."
+            f"cluster standard error of {sem:.3f} mm across {k} units "
+            f"({cluster_kind}) supports only {justified}. The extra digits are "
+            f"noise presented as resolution.{caveat}"
         ),
         detail=detail,
         waiver=waiver,
     )
 
 
+def evaluation_clusters(
+    dataset: Dataset, indices: SplitIndices, *, n_blocks: int = 10
+) -> tuple[list[str], str]:
+    """The independent-ish unit of this split, and its name.
+
+    A population split clusters by participant and session, which is the
+    independent unit. A within user split holds out exactly one session, so
+    that clustering leaves one unit and no measure of spread at all. It
+    clusters by contiguous time block instead, in timestamp order, and returns
+    a name that says so, because a block is not independent of its neighbours
+    and every message built from these clusters has to admit that.
+    """
+    if indices.split.is_population:
+        return (
+            [
+                f"{dataset.meta[int(i)].participant_key}/"
+                f"{dataset.meta[int(i)].session_key}"
+                for i in indices.test
+            ],
+            "participant and session pairs",
+        )
+    order = np.argsort(
+        [dataset.meta[int(i)].timestamp_s for i in indices.test], kind="stable"
+    )
+    blocks = max(1, min(n_blocks, int(indices.test.size)))
+    labels = [""] * int(indices.test.size)
+    for rank, position in enumerate(order.tolist()):
+        labels[position] = f"time-block-{rank * blocks // int(indices.test.size):02d}"
+    return labels, "contiguous time blocks within one held-out session"
+
+
 def run_guards(
     dataset: Dataset,
     indices: SplitIndices,
     errors_mm: NDArray[np.floating],
+    protocol: Protocol,
     *,
     waivers: Sequence[Waiver] = (),
     max_participant_share: float = 0.5,
     label_match_ratio: float = 0.20,
     reported_decimals: int = 2,
-    min_clusters: int = 5,
+    min_clusters: int | None = None,
     raise_on_violation: bool = True,
 ) -> GuardReport:
     """Run every guard, and raise unless each one passes or is waived.
@@ -489,18 +802,27 @@ def run_guards(
     blocking, so turning the exception off does not buy a clean number.
 
     errors_mm is the per sample error over the test set, which is
-    metrics.joint_errors output or its per sample mean. Clusters are formed as
-    participant and session pairs, because that is the independent unit.
+    metrics.joint_errors output or its per sample mean.
+
+    protocol is required rather than inferred. The returned GuardReport carries
+    a GuardBinding naming the dataset, the version, the split and a fingerprint
+    of the exact held-out samples, and a Report refuses guards whose binding
+    does not match its rows. Without that, a guard report computed on an easier
+    split attaches to a harder one and nothing notices.
     """
+    if protocol.split is not indices.split:
+        raise ValueError(
+            f"protocol declares {protocol.split.name} but the split "
+            f"{indices.name!r} is {indices.split.name}; guards judged against "
+            f"the wrong protocol are worse than no guards"
+        )
     by_name = {w.guard: w for w in waivers}
-    clusters = [
-        f"{dataset.meta[int(i)].participant}/{dataset.meta[int(i)].session}"
-        for i in indices.test
-    ]
+    clusters, cluster_kind = evaluation_clusters(dataset, indices)
     findings = (
         check_participant_concentration(
             dataset,
             indices.test,
+            split=indices.split,
             max_share=max_participant_share,
             waiver=by_name.get(GuardName.PARTICIPANT_CONCENTRATION),
         ),
@@ -508,18 +830,32 @@ def run_guards(
             dataset,
             indices.train,
             indices.test,
+            split=indices.split,
             ratio=label_match_ratio,
             waiver=by_name.get(GuardName.SINGLE_SUBJECT_LABEL_MATCH),
         ),
         check_evaluation_size(
             errors_mm,
             clusters,
+            split=indices.split,
             reported_decimals=reported_decimals,
             min_clusters=min_clusters,
+            cluster_kind=cluster_kind,
             waiver=by_name.get(GuardName.EVALUATION_SIZE),
         ),
     )
-    report = GuardReport(findings=findings)
+    report = GuardReport(
+        findings=findings,
+        binding=GuardBinding(
+            split=indices.split,
+            split_name=indices.name,
+            dataset=protocol.dataset,
+            dataset_version=protocol.dataset_version,
+            n_train=indices.n_train,
+            n_test=indices.n_test,
+            fingerprint=split_fingerprint(dataset, indices),
+        ),
+    )
     if raise_on_violation and report.blocking:
         raise GuardViolation(report.blocking)
     return report

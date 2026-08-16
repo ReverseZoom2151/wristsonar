@@ -120,6 +120,60 @@ def test_single_participant_cannot_be_asked_a_cross_user_question() -> None:
         cross_user_folds(data)
 
 
+def test_negative_indices_are_refused_rather_than_aliased() -> None:
+    # train=[0..5] and test=[-1] looks disjoint and inside bounds, and then
+    # indexes sample 5 on both sides the moment it is used.
+    with pytest.raises(LeakageError, match="negative indices"):
+        SplitIndices(
+            name="aliasing",
+            split=Split.WITHIN_SESSION,
+            train=np.arange(6, dtype=np.intp),
+            test=np.asarray([-1], dtype=np.intp),
+        )
+
+
+def test_repeated_indices_within_one_half_are_refused() -> None:
+    with pytest.raises(LeakageError, match="repeats"):
+        SplitIndices(
+            name="doubled",
+            split=Split.WITHIN_SESSION,
+            train=np.asarray([0, 1, 1], dtype=np.intp),
+            test=np.asarray([2], dtype=np.intp),
+        )
+
+
+def test_one_person_under_two_spellings_is_refused() -> None:
+    poses = np.zeros((2, 21, 3), dtype=np.float64)
+    meta = [
+        SampleMeta(participant="p1", session="s1", device="watch-a"),
+        SampleMeta(participant="P1", session="s2", device="watch-a"),
+    ]
+    with pytest.raises(LeakageError, match="spelling"):
+        Dataset(poses=poses, meta=tuple(meta))
+
+
+def test_a_session_label_shared_by_two_people_is_two_sessions() -> None:
+    poses = np.zeros((4, 21, 3), dtype=np.float64)
+    meta = [
+        SampleMeta(participant="p1", session="s1", device="watch-a"),
+        SampleMeta(participant="p1", session="s1", device="watch-a", timestamp_s=1.0),
+        SampleMeta(participant="p2", session="s1", device="watch-a"),
+        SampleMeta(participant="p2", session="s1", device="watch-a", timestamp_s=1.0),
+    ]
+    data = Dataset(poses=poses, meta=tuple(meta))
+
+    assert data.sessions == ("p1/s1", "p2/s1")
+    fold = within_session_split(data, session="p1/s1", test_fraction=0.5)
+    assert set(data.participant_of(fold.test)) == {"p1"}
+    assert set(data.participant_of(fold.train)) == {"p1"}
+
+
+def test_holding_one_person_out_twice_is_refused() -> None:
+    data = make_dataset(n_participants=3, n_sessions=1, n_frames=6)
+    with pytest.raises(ValueError, match="more than"):
+        cross_user_folds(data, participants=["P00", "P00"])
+
+
 def test_dataset_rejects_mismatched_metadata() -> None:
     poses = np.zeros((3, 21, 3), dtype=np.float64)
     meta = [SampleMeta(participant="P0", session="S0", device="d")]

@@ -49,12 +49,12 @@ def _protocol() -> Protocol:
 def _setup() -> tuple[Dataset, SplitIndices, IndexArray]:
     data = make_dataset(n_participants=4, n_sessions=3, n_frames=120)
     held_out = "P00"
-    test = data.indices_where(participant=held_out, session="P00-S2")
+    test = data.indices_where(participant=held_out, session="p00/p00-s2")
     pool = np.sort(
         np.concatenate(
             [
-                data.indices_where(participant=held_out, session="P00-S0"),
-                data.indices_where(participant=held_out, session="P00-S1"),
+                data.indices_where(participant=held_out, session="p00/p00-s0"),
+                data.indices_where(participant=held_out, session="p00/p00-s1"),
             ]
         )
     )
@@ -149,6 +149,84 @@ def test_calibrating_on_the_test_frames_raises() -> None:
             _protocol(),
             sample_seconds=SAMPLE_SECONDS,
             calibration_pool=indices.test,
+        )
+
+
+def _two_person_setup() -> tuple[Dataset, SplitIndices, IndexArray]:
+    """Two people in the test set, both with held-in data of their own."""
+    data = make_dataset(n_participants=4, n_sessions=3, n_frames=60)
+    held_out = ("P00", "P01")
+
+    def session(person: str, number: int) -> str:
+        key = person.lower()
+        return f"{key}/{key}-s{number}"
+
+    test = np.sort(
+        np.concatenate(
+            [
+                data.indices_where(participant=person, session=session(person, 2))
+                for person in held_out
+            ]
+        )
+    )
+    pool = np.sort(
+        np.concatenate(
+            [
+                data.indices_where(participant=person, session=session(person, s))
+                for person in held_out
+                for s in (0, 1)
+            ]
+        )
+    )
+    train = np.asarray(
+        [i for i in range(data.n_samples) if data.meta[i].participant not in held_out],
+        dtype=np.intp,
+    )
+    indices = SplitIndices(
+        name="cross-user[held-out=P00,P01]",
+        split=Split.CROSS_USER,
+        train=train,
+        test=test,
+    )
+    return data, indices, pool
+
+
+def test_the_budget_is_spent_per_user_and_not_in_recording_order() -> None:
+    """Two minutes of per-user data means two minutes each.
+
+    Spending the budget in global recording order gives the whole allowance to
+    whoever recorded earliest, leaves the other test participant with nothing,
+    and still reports the result as per-user calibration.
+    """
+    data, indices, pool = _two_person_setup()
+    curve = sweep_calibration(
+        data,
+        indices,
+        _fitter,
+        _protocol(),
+        sample_seconds=SAMPLE_SECONDS,
+        budgets=(1.0,),
+        calibration_pool=pool,
+    )
+    point = curve.points[0]
+
+    assert point.n_calibration_samples == 120  # sixty seconds for each of two
+    assert point.minutes_achieved == pytest.approx(1.0)
+    assert not point.truncated
+
+
+def test_a_calibration_pool_from_another_person_is_refused() -> None:
+    data, indices, _pool = _two_person_setup()
+    outsider = data.indices_where(participant="P02")
+    with pytest.raises(LeakageError, match="not in the test set"):
+        sweep_calibration(
+            data,
+            indices,
+            _fitter,
+            _protocol(),
+            sample_seconds=SAMPLE_SECONDS,
+            budgets=(1.0,),
+            calibration_pool=outsider,
         )
 
 

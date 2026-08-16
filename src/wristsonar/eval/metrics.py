@@ -26,6 +26,18 @@ the wrist and are close to free. Per joint output is mandatory here rather
 than optional, and JointBreakdown separates fingertips from the rest so the
 dilution is visible without having to read twenty one rows.
 
+Twenty one joints or twenty. Under root alignment the wrist error is
+identically zero, because root alignment is defined as subtracting the wrist
+from both poses. Averaging that zero in with the other twenty joints therefore
+understates the error by exactly one twenty first, which is 4.76 percent, which
+is half of report.CLEAR_MARGIN. The source paper this project checks itself
+against averages over the twenty non-wrist joints. Neither convention is wrong
+and picking one silently is, so both are computed on every evaluation:
+MetricSet.mpjpe is the twenty one joint field convention and
+MetricSet.mpjpe_excl_root is the twenty joint convention, and the report prints
+both in the same table. The same applies to PCK, where including a joint that
+is always exactly correct inflates the fraction by up to one twenty first.
+
 Units. Poses arrive in metres because that is what types.HandPose stores.
 Everything reported leaves in millimetres because that is what the field
 quotes, and the conversion happens once, here.
@@ -47,6 +59,7 @@ __all__ = [
     "FINGERTIP_INDICES",
     "FINGERTIP_NAMES",
     "MM_PER_M",
+    "NON_ROOT_INDICES",
     "ROOT_INDEX",
     "Alignment",
     "JointBreakdown",
@@ -68,6 +81,16 @@ PoseArray = NDArray[np.float64]
 MM_PER_M = 1000.0
 
 ROOT_INDEX = JOINT_NAMES.index("wrist")
+
+NON_ROOT_INDICES: tuple[int, ...] = tuple(
+    i for i in range(N_JOINTS) if i != ROOT_INDEX
+)
+"""The twenty joints that are not the wrist.
+
+Root alignment forces the wrist error to zero, so any mean that includes it is
+diluted by a column that cannot carry information. This tuple is what the
+twenty joint convention selects.
+"""
 
 FINGERTIP_NAMES: tuple[str, ...] = tuple(
     name for name in JOINT_NAMES if name.endswith("_tip")
@@ -230,11 +253,20 @@ def joint_errors(
     return errors
 
 
+def _select_joints(
+    errors: NDArray[np.float64], *, include_root: bool
+) -> NDArray[np.float64]:
+    if include_root:
+        return errors
+    return errors[:, list(NON_ROOT_INDICES)]
+
+
 def mpjpe(
     pred: Sequence[HandPose] | NDArray[np.floating],
     true: Sequence[HandPose] | NDArray[np.floating],
     *,
     alignment: Alignment = Alignment.ROOT,
+    include_root: bool = True,
 ) -> float:
     """Mean per joint position error in millimetres.
 
@@ -243,16 +275,26 @@ def mpjpe(
     removes error. Pass Alignment.NONE if the prediction is meant to be in a
     global frame.
 
-    The mean is over all frames and all twenty one joints at once, which is
-    the field convention and which dilutes the fingertips with the near static
-    metacarpals. Read the JointBreakdown before quoting this.
+    include_root selects the convention. True averages over all twenty one
+    joints, which is what most of this field prints and which, under root
+    alignment, averages in a wrist column that is identically zero and so
+    understates the error by exactly one twenty first. False averages over the
+    twenty non-wrist joints, which is the convention of the paper this project
+    checks itself against. MetricSet carries both, and neither is allowed to
+    travel without saying which it is.
+
+    Either way the mean is over all frames at once and dilutes the fingertips
+    with the near static metacarpals. Read the JointBreakdown before quoting it.
     """
-    return float(joint_errors(pred, true, alignment=alignment).mean())
+    errors = joint_errors(pred, true, alignment=alignment)
+    return float(_select_joints(errors, include_root=include_root).mean())
 
 
 def pa_mpjpe(
     pred: Sequence[HandPose] | NDArray[np.floating],
     true: Sequence[HandPose] | NDArray[np.floating],
+    *,
+    include_root: bool = True,
 ) -> float:
     """Procrustes aligned MPJPE in millimetres.
 
@@ -260,8 +302,15 @@ def pa_mpjpe(
     accident. This number has had per frame rotation, translation and scale
     fitted away, so it describes shape agreement only. If the product points
     at something, rotation is the product and this metric has deleted it.
+
+    Procrustes alignment does not force the wrist error to zero, so here the
+    joint count is a convention choice rather than a dilution by a guaranteed
+    zero. It is still exposed so that a twenty joint table stays a twenty joint
+    table in every column.
     """
-    return mpjpe(pred, true, alignment=Alignment.PROCRUSTES)
+    return mpjpe(
+        pred, true, alignment=Alignment.PROCRUSTES, include_root=include_root
+    )
 
 
 def pck(
@@ -270,6 +319,7 @@ def pck(
     *,
     threshold_m: float = DEFAULT_PCK_THRESHOLD_M,
     alignment: Alignment = Alignment.ROOT,
+    include_root: bool = True,
 ) -> float:
     """Fraction of joints within threshold_m of ground truth, in 0 to 1.
 
@@ -277,10 +327,17 @@ def pck(
     the sensor's 5.7 cm range resolution, so a high score is evidence about
     the learned hand prior rather than about the echo, and the threshold must
     always be quoted with the number.
+
+    include_root has the same meaning as in mpjpe, and matters here for the
+    same reason: under root alignment the wrist is inside the threshold on
+    every frame by construction, so counting it inflates the fraction by up to
+    one twenty first.
     """
     if threshold_m <= 0:
         raise ValueError("PCK threshold must be positive")
-    errors = joint_errors(pred, true, alignment=alignment)
+    errors = _select_joints(
+        joint_errors(pred, true, alignment=alignment), include_root=include_root
+    )
     return float((errors <= threshold_m * MM_PER_M).mean())
 
 
@@ -360,8 +417,19 @@ class MetricSet:
     """
 
     mpjpe: Measurement
+    """Twenty one joint mean, the convention most of the field prints."""
+
+    mpjpe_excl_root: Measurement
+    """Twenty non-wrist joint mean, the convention the source paper uses.
+
+    Under root alignment this is exactly 21/20 times mpjpe, because the wrist
+    column is identically zero. Carrying both is what stops a table from
+    quietly gaining 4.76 percent against a paper that counted twenty.
+    """
+
     pa_mpjpe: Measurement
     pck: Measurement
+    pck_excl_root: Measurement
     breakdown: JointBreakdown
     alignment: Alignment
     pck_threshold_m: float
@@ -371,9 +439,25 @@ class MetricSet:
     def protocol(self) -> Protocol:
         return self.mpjpe.protocol
 
+    def comparable_to(self, other: MetricSet) -> bool:
+        """Whether two metric sets may share a table.
+
+        Everything Measurement.comparable_to tests, plus the two things that
+        live on the metric set rather than on the protocol: the alignment and
+        the PCK threshold. A Procrustes-aligned row beside a root-aligned one
+        is two different claims in one column, and a PCK at 2 cm beside a PCK
+        at 5 cm is not a comparison at all.
+        """
+        return (
+            self.mpjpe.comparable_to(other.mpjpe)
+            and self.alignment is other.alignment
+            and self.pck_threshold_m == other.pck_threshold_m
+        )
+
     def summary(self) -> str:
         return (
-            f"MPJPE {self.mpjpe.value:.2f} mm "
+            f"MPJPE {self.mpjpe.value:.2f} mm over 21 joints, "
+            f"{self.mpjpe_excl_root.value:.2f} mm over 20 "
             f"({self.alignment.value}), "
             f"PA-MPJPE {self.pa_mpjpe.value:.2f} mm, "
             f"PCK@{self.pck_threshold_m * 100:g}cm {self.pck.value:.3f}, "
@@ -406,14 +490,24 @@ def evaluate(
         return replace(protocol, notes=joined)
 
     mpjpe_value = mpjpe(p, t, alignment=alignment)
+    mpjpe_excl_root_value = mpjpe(p, t, alignment=alignment, include_root=False)
     pa_value = pa_mpjpe(p, t)
     pck_value = pck(p, t, threshold_m=pck_threshold_m, alignment=alignment)
+    pck_excl_root_value = pck(
+        p, t, threshold_m=pck_threshold_m, alignment=alignment, include_root=False
+    )
 
     return MetricSet(
         mpjpe=Measurement(
             value=mpjpe_value,
             unit="mm",
             protocol=stamped(f"mpjpe {alignment.describe()}"),
+            samples=n,
+        ),
+        mpjpe_excl_root=Measurement(
+            value=mpjpe_excl_root_value,
+            unit="mm",
+            protocol=stamped(f"mpjpe over 20 non-wrist joints {alignment.describe()}"),
             samples=n,
         ),
         pa_mpjpe=Measurement(
@@ -426,6 +520,12 @@ def evaluate(
             value=pck_value,
             unit=f"fraction@{pck_threshold_m * 100:g}cm",
             protocol=stamped(f"pck {alignment.describe()}"),
+            samples=n,
+        ),
+        pck_excl_root=Measurement(
+            value=pck_excl_root_value,
+            unit=f"fraction@{pck_threshold_m * 100:g}cm",
+            protocol=stamped(f"pck over 20 non-wrist joints {alignment.describe()}"),
             samples=n,
         ),
         breakdown=JointBreakdown(
