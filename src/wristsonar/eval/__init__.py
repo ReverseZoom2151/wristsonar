@@ -26,6 +26,7 @@ from wristsonar.eval.calibration import (
     CalibrationPoint,
     sweep_calibration,
 )
+from wristsonar.eval.experiment import ExperimentError, ExperimentResult, run_experiment
 from wristsonar.eval.guard import (
     GuardFinding,
     GuardName,
@@ -74,6 +75,8 @@ __all__ = [
     "CalibrationCurve",
     "CalibrationPoint",
     "Dataset",
+    "ExperimentError",
+    "ExperimentResult",
     "GuardFinding",
     "GuardName",
     "GuardReport",
@@ -103,6 +106,7 @@ __all__ = [
     "pa_mpjpe",
     "pck",
     "per_joint_mpjpe",
+    "run_experiment",
     "run_guards",
     "sweep_calibration",
     "within_session_split",
