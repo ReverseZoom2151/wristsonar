@@ -170,7 +170,11 @@ class TestNoiseFloorOnNoise:
         )
         assert by_median == 53
         assert by_floor <= by_median
-        assert by_floor <= 40
+        # Pinned exactly, not bounded loosely. `noise_floor` quotes 10 percent
+        # of these 200 frames in its docstring as the argument for blocking the
+        # estimate, and a bound of 40 would let the real rate double while the
+        # docstring kept claiming 20.
+        assert by_floor == 20
 
     def test_a_pure_noise_crop_is_rarely_reported_as_a_hand(
         self, config: ChirpConfig, reference: NDArray[np.complex128]

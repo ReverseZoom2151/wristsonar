@@ -12,9 +12,9 @@ pins a linear 18 to 21 kHz sweep of 600 samples at 48 kHz. The paper pins the
 rest: a fifth-order Butterworth bandpass over the same band, cross-correlation
 against one transmitted sweep, one range bin per sample so that a bin is
 c / (2 * fs) = 3.573 mm, and the differential profile as the frame-to-frame
-difference of correlation magnitude. `wristsonar.dsp` is expected to
-implement exactly that, and the constants it must match live here rather than
-being retyped at each call site.
+difference of correlation magnitude. `wristsonar.signal` implements exactly
+that, and the constants it must match live here rather than being retyped at
+each call site.
 
 Three things remain outside our control and are named as such rather than
 papered over:

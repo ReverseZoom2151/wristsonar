@@ -91,11 +91,13 @@ def load_torch_checkpoint(
     )
     bundle.verify_weights(weights)
     width = pose_cnn_width(bundle.metadata.model)
-    try:
-        model = load_pose_cnn(weights, width=width)
-        import torch
-    except ModelUnavailableError:
-        raise
+    # load_pose_cnn imports Torch on its first line and converts a missing
+    # install into ModelUnavailableError, so once it returns the import below
+    # cannot fail. This used to sit in a try whose handler re-raised exactly
+    # what it caught, which protected nothing while implying the bare import
+    # was the line at risk.
+    model = load_pose_cnn(weights, width=width)
+    import torch
 
     def backend(batch: np.ndarray) -> np.ndarray:
         with torch.inference_mode():
