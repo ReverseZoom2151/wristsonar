@@ -46,32 +46,76 @@ is genuinely shorter than the original.
 
 ### The 15 percent
 
-Three details are not documented anywhere. None of them is fatal, and each is
-handled explicitly in `wristsonar.data.watchhand`:
+Four details are not documented anywhere. None of them is fatal on its own, and
+each has a named home in `wristsonar.preprocess.PreprocessingDescriptor` rather
+than living as a default inside whichever function happened to need it:
 
 1. **Absolute amplitude scale.** Whether the 16-bit PCM was correlated as
    int16, as float in [-1, 1], or something else is not stated, so the shipped
    profiles carry an unknown constant factor. Any per-profile normalisation
-   cancels it. `SessionData.echo_profile` and `SessionData.windows` normalise
-   by default for exactly this reason. The paper also normalises before
-   feeding the model, so nothing is lost.
+   cancels it. `SessionData.echo_profile` normalises by default for exactly
+   this reason, and `SessionData.windows` normalises the assembled window
+   according to `window_normalisation`, which is peak. The paper also
+   normalises before feeding the model, so nothing is lost.
 2. **Which correlation lag is bin zero.** `np.correlate` mode and the crop
    origin are unstated, so a live pipeline could be offset by a constant number
-   of bins, which a model reads as a differently sized hand. This is
+   of bins, which a model reads as a differently sized hand. This one is
    measurable rather than guessable: the speaker-to-microphone direct path is
-   a large static peak at essentially zero range.
-   `estimate_bin_zero_offset` recovers it from the data, and the same function
-   run over a live capture aligns the two.
-3. **Whether profiles are signed correlation or magnitude.** The paper
+   a large static peak at essentially zero range, so `estimate_bin_zero_offset`
+   takes the median over time to kill hand motion and finds the near-field
+   peak. It is no longer advisory. `SessionData.verify_preprocessing` runs it
+   on every session the corpus builder touches and refuses to build when the
+   measurement disagrees with `bin_zero_offset`, naming the value it measured.
+3. **How the shipped differential lines up with the original beside it.** See
+   below; this is the one the shapes cannot settle.
+4. **Whether profiles are signed correlation or magnitude.** The paper
    describes the differential as a subtraction of magnitudes, which implies
    magnitude. Not stated outright.
 
-All three are resolvable empirically against the shipped profiles, because the
-profiles are shipped. That is what makes this recoverable rather than
-speculative. The honest close-out is a one-off validation: capture on a
+Three of the four are resolvable empirically against the shipped profiles,
+because the profiles are shipped. That is what makes this recoverable rather
+than speculative. The honest close-out is a one-off validation: capture on a
 Samsung Galaxy Watch 7, run the reimplemented pipeline, and check that the
 static near-field structure and bin scaling match a WatchHand session. Do that
 before trusting a cross-device number.
+
+### The differential alignment, and why the declared lag is 2
+
+The shipped differential is two frames shorter than the original, not the one
+frame a plain frame-to-frame difference loses. For `sub1_samsung_left_video`
+that is 27,196 columns against 27,198. So a difference was taken and then one
+further column was trimmed off an end nobody recorded, and the shapes alone
+cannot say which end.
+
+Note carefully what the lag is. It is an index offset into somebody else's
+array, not a delay in the signal. Under the causal convention this project
+uses, the differential belonging with original column i is always the
+difference ending at i. The lag says only where that quantity sits in the array
+WatchHand shipped, so the training path reads differential column i minus lag,
+and the first few originals have no differential aligned with them and are
+skipped rather than paired with something else. The live path builds the
+difference itself, has no shipped array to index and therefore no lag to apply,
+which is precisely why the two paths can produce the same tensor.
+
+Trimmed at the front the lag is 2, trimmed at the back it is 1, and the
+descriptor declares 2. The asymmetry is what decides it rather than a
+preference for the larger number. Declaring 1 when the truth is 2 reads a
+column holding the difference ending at i plus 1, which puts a frame recorded
+after the predicted pose inside a window documented as causal, and inflates
+offline accuracy by an amount that can never be reproduced online. Declaring 2
+when the truth is 1 reads a difference ending at i minus 1: one frame stale,
+still causal, and costing a little signal. Only one of those two errors can
+flatter a reported number.
+
+`estimate_differential_lag` measures the real value wherever the shipped
+differential can be reconstructed from the shipped original, and
+`verify_preprocessing` refuses a corpus build when the measurement contradicts
+the declared value. On the released arrays that reconstruction is expected to
+fail, because something was trimmed or filtered that the loader never sees, and
+the function returns nothing rather than picking whichever alignment scored
+best. So the declared 2 currently rests on the argument above and not on a
+measurement of the real data. That is a stated weakness, not a settled
+question; see ROADMAP.md.
 
 ## The risk the brief did not anticipate
 
@@ -209,6 +253,7 @@ that completes successfully against the wrong bytes.
 ```python
 from pathlib import Path
 from wristsonar.data import (
+    Manifest,
     Study,
     WatchHandDataset,
     build_watchhand_manifest,
@@ -226,11 +271,31 @@ manifest.write(Path("manifests/watchhand.json"))
 dataset = WatchHandDataset(root, Manifest.read(Path("manifests/watchhand.json")))
 for ref in dataset.sessions(studies=[Study.MAIN]):
     session = dataset.load(ref)  # verifies each file it opens
+    session.verify_preprocessing()  # measures what the descriptor asserts
     for start, window in session.windows():  # (2, 60, 96) float32
         ...
 
 protocol = watchhand_protocol(Split.CROSS_USER, subjects=24, version=dataset.version)
 ```
+
+`windows` takes the same `PreprocessingDescriptor` the live capture path takes
+and the checkpoint records, and has no geometry defaults of its own. The
+yielded integer is the index of the window's first original column, so windows
+begin at `differential_lag` rather than at zero: the leading originals have no
+differential aligned with them. `SessionWindowSource.iter_examples` calls
+`verify_preprocessing` per session before it yields anything, so a corpus
+cannot be built on top of a measurement that contradicts the contract a
+checkpoint will carry. The call is per session rather than once per release
+because the bin zero offset is a property of a device and a recording.
+
+Landmark sidecars are verified against the manifest whenever they exist. There
+used to be an exemption for sidecars the manifest did not mention, which was
+exactly backwards: landmarks are generated after the manifest is built, so
+being unpinned is their normal state, and the ground truth every reported
+number is measured against was the one file that skipped its check. A sidecar
+that is absent still reads as absent, and `hand_poses` raises from there. One
+that is present and unaccounted for is refused, and the fix is to rebuild the
+manifest now that the sidecars exist.
 
 Two verification modes, because 175 GB. `Manifest.verify(root, deep=True)`
 walks and hashes everything, and is what you run after downloading and again
@@ -252,8 +317,10 @@ instead, which the manifest does.
 `tests/data/` runs with nothing downloaded. `conftest.py` generates a
 miniature tree that mirrors the published layout key for key: the same
 directory name grammar, the same `config.json` structure, the same records
-format, the same `(600, n_frames)` float32 arrays with a shorter differential.
-Generating rather than checking in a sample avoids redistributing participant
+format, the same `(600, n_frames)` float32 arrays with a differential two frames
+shorter, trimmed at the front, so that the lag the loader has to recover is a
+property of the fixture rather than an assumption baked into both halves of the
+test. Generating rather than checking in a sample avoids redistributing participant
 data, and keeps the schema written down in exactly one place, so a mismatch
 with the real dataset surfaces as a failing parse instead of a test passing
 against a stale copy.

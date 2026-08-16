@@ -62,12 +62,12 @@ That string is what a `Measurement` prints. There is no code path that produces
 a reportable number without the protocol attached, because `Measurement` cannot
 be constructed without one and `Protocol` refuses a dataset without a version.
 
-Four splits. A report covers exactly one of them, because rows inside a
+Four splits. A single report covers exactly one of them, because rows inside a
 table have to be comparable for the comparison to mean anything, and a
-cross-user model row beside a within-session baseline row would not be. The
-container that renders all four side by side is not built yet, so reporting
-the full set is currently a matter of discipline rather than something the
-code enforces:
+cross-user model row beside a within-session baseline row would not be.
+Reporting the full set is a separate type that holds one report per split and
+refuses to render unless the honest splits are all present, so the weak number
+cannot be published without the strong ones beside it:
 
 | Split | What it tests |
 | --- | --- |
@@ -109,11 +109,22 @@ wrist and leaves what moved.
 
 ## Where it stands
 
-The offline and host-side substrate is built: data integrity, signal processing,
-landmark preparation, causal model inputs, guarded aggregate evaluation,
-training, checkpoint provenance/loading, capture health checks, realtime
-inference and a Blender sink. Nothing has been trained on WatchHand yet, and no
+Everything from the archive through to a live pose stream is written and tested
+on synthetic signals. Nothing has been trained on WatchHand yet, and no
 benchmark result exists, honest or otherwise.
+
+The piece worth naming is the preprocessing contract. A training pipeline and a
+live capture path can each be correct on their own and still disagree about
+what a model input is, and when they do the failure is silent: a broken capture
+still emits well formed pose JSON, just wrong. So the crop origin, the window
+length, the normalisation and the differential alignment live in one object
+that both paths read, a checkpoint records the one it was trained under, and
+loading refuses a checkpoint whose contract disagrees with the pipeline about
+to feed it. A test pushes the same synthetic audio through both paths and
+requires the windows to match.
+
+The Wear OS module has never been compiled. It is written against the
+documented API surface and reviewed, which is not the same thing as run.
 
 The evaluation harness preceded training deliberately. A benchmark that arrives
 after the model is a benchmark shaped by the model.
@@ -138,8 +149,13 @@ unaffected and can be trained against the shipped labels directly. See
 ## Live host listener
 
 The Wear OS module in [`wear/`](wear/) emits raw signed-16-bit PCM to the host.
-The host aligns callbacks to the chirp itself, runs the same causal DSP used by
-the model input builder, and writes pose JSON Lines to standard output:
+The host finds the chirp by correlation once and then counts samples forward,
+rescoring the lock every second, because an Android capture callback is stamped
+milliseconds late and a range bin is 21 microseconds wide. Timestamps are kept
+for the two jobs they can actually do: spotting a dropped buffer, and
+estimating the true sample rate over a long enough baseline to catch the system
+resampling underneath us. The DSP that follows is the same code the model input
+builder runs, and pose lands on standard output as JSON Lines:
 
 ```bash
 pip install -e ".[train]"

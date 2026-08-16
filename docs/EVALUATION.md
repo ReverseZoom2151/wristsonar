@@ -34,9 +34,19 @@ is not a result, it is a selection.
 The enum ordinals encode claim strength rather than order of construction, and
 `Split.is_honest` is false for exactly one member. `Measurement.comparable_to`
 refuses to treat two measurements as answering the same question unless the
-split, the ground-truth source, the calibration budget and the unit all match.
-Dataset may differ, since cross-dataset comparison is legitimate when everything
-else is held.
+split, the ground-truth source, the calibration budget, the unit and the notes
+all match. Dataset may differ, since cross-dataset comparison is legitimate when
+everything else is held. Notes are in that test because `metrics.evaluate`
+records the alignment there, and a Procrustes-aligned figure sharing a column
+with a root-aligned one is the flattering version of this mistake.
+
+A second axis cuts across the four. `Split.is_population` is true for cross-user
+and cross-device, the two that claim something about people who contributed
+nothing, and `Split.is_within_user` is true for the other two, which hold the
+person fixed on purpose. The guards read it, for reasons given below.
+
+"Reported together" is a container, not a convention. See the section on what a
+complete report looks like.
 
 For reference, the published WatchHand figures across the analogous protocols
 are 6.02 mm within-session, 7.87 mm cross-session with remounting, 14.88 mm
@@ -92,6 +102,27 @@ protocol at a different budget. The harness sweeps rather than picks:
 `sweep_calibration` over `CALIBRATION_BUDGETS_MIN` produces a `CalibrationCurve`,
 and the curve is what gets reported. Not its best point.
 
+Where the calibration data comes from decides whether the curve means anything,
+so three things are fixed rather than configurable. The budget is spent per test
+participant out of that person's own held-in pool: two minutes means two minutes
+each, and spending it in global recording order would hand the whole budget to
+whoever recorded earliest and still call the result per-user calibration. Within
+a person the samples are taken in timestamp order from the start of their pool,
+because a real enrolment is the first two minutes a user gives you rather than a
+sample spread evenly across everything they will ever do. And the pool is
+required to be disjoint from the test set and drawn from the test participants:
+calibrating on the frames you are about to score produces a very convincing
+curve, and calibrating on somebody else's frames is extra training data under
+another name. Both are `LeakageError`, not a warning.
+
+Each rung reports the minutes the worst-served participant actually got, and is
+marked truncated when the pool could not supply the budget, because a twenty
+minute point built from four minutes of data is not a twenty minute point. On a
+leave-one-user-out fold the default pool is empty by construction, which is
+correct: a cross-user protocol has no held-in data for that person, so a nonzero
+budget forces the caller to supply a pool explicitly and thereby to admit that
+the result is no longer zero-shot cross-user.
+
 The plan specifies results at 0, 1, 2 and 20 minutes of per-user data, matching
 the budgets at which the published figures above were taken, so that the curve
 is comparable to the literature at every point on it. The curve is the honest
@@ -131,11 +162,39 @@ warning when subjects or sessions appear on both sides of a split.
 few people, which is the exact shape of the knee-acoustics failure.
 `check_evaluation_size` flags a figure resting on too little evidence to mean
 much, which is also what `Measurement.samples` is for.
-`check_label_distribution_match` flags a train and test pair whose label
-distributions differ enough that the comparison is measuring the shift rather
-than the model. Findings come back as a `GuardReport`, and a `Waiver` requires
-naming the guard being waived, so waiving one is a recorded act rather than a
-silent omission.
+`check_label_distribution_match` flags a test set whose poses sit on top of one
+training subject's cloud, since recognising that subject is then sufficient to
+score well and the target variable is optional.
+
+All three take the split they are judging as an argument, and this is the part
+that took the longest to get right. The same observation is a shortcut under one
+protocol and the protocol working under another. A test set made of one
+participant is fatal on cross-user and is the definition of cross-session. An
+inter-subject geometry test has nothing to measure on a split that trains on one
+person by design. A guard that fires on every honest within-user split is a
+guard that gets routinely waived, and a routinely waived guard protects nothing,
+so the two within-user splits now pass with a finding that states in plain words
+what the number does and does not support. The practical consequence is that a
+clean cross-session split can headline on its own terms, where previously all
+three guards blocked it and the only way through was a waiver.
+
+Two structural changes stop a guard report from being decorative. A
+`GuardReport` cannot be constructed missing a guard: an empty findings tuple
+used to mean "nothing was found", which is indistinguishable from "nothing ever
+ran", and the second is the state an evaluation harness must never accept. And
+it carries a `GuardBinding` naming the dataset, the pinned version, the split
+and a `split_fingerprint` over the exact held-out samples, which a `Report`
+checks against its own rows. Without that, guards computed on an easier split
+attach to a harder result and the rendered report looks identical either way.
+
+A `Waiver` names the guard, the person accepting the risk, a reason of at least
+40 characters and 8 distinct words, and an expiry date that is in the future and
+at most 90 days out. The length floor is not bureaucracy and is not the load
+bearing part either: forty characters of one held-down key clears a length floor
+and explains nothing, which is why the words have to be distinct, and a deadline
+defeats any amount of typing, which is why the expiry exists. The waiver is
+printed in the report every time and stops suppressing its guard on the day it
+expires.
 
 ## Ground truth, and what a millimetre means
 
@@ -170,16 +229,67 @@ in ROADMAP.md, phase 5.
 Every row carries its protocol line, produced by `Protocol.describe`, which
 renders the split, the calibration budget or the word zero-shot, the subject
 count, the ground-truth source, the dataset with its pinned version, and a
-held-out-poses marker where it applies. A `Report` is a set of `ResultRow`
-entries covering all four splits, the three trivial baselines, the calibration
-curve, the held-out-pose evaluation, and the guard report, for every model
-compared.
+held-out-poses marker where it applies.
+
+A `Report` holds one split and not four. Rows inside a table have to be
+comparable for the comparison to mean anything, and a cross-user model row
+beside a within-session baseline row is not, so `Report` checks each incoming
+row against the first with `MetricSet.comparable_to` and refuses the mismatch.
+What a single report covers is one split's model rows, the three trivial
+baselines, the calibration curve, and the guard report bound to that split. It
+refuses to produce a headline while any of those is missing, while any guard is
+blocking, or while the guards attached to it describe some other split.
+
+The full set is therefore a second container. `MultiSplitReport` holds one
+`Report` per split, files each one under the split read off its own rows rather
+than a split passed in, renders them weakest claim first so the strongest reads
+last, and refuses a headline unless every `Split.is_honest` split is present and
+every split evaluates the same model names. Within-session is rendered when
+present and is never required, because it cannot fail and a report is not
+improved by a number that cannot fail. The other three are required together
+because showing one and not the others is a selection, and a selection made
+after seeing the numbers is the cheapest wrong headline available. A system
+measured on the easy splits and a different one measured on the hard splits is
+not one result, which is what the model-name check is for.
 
 Metrics are MPJPE as the headline, PA-MPJPE alongside it since Procrustes
 alignment removes the global rotation a wrist-mounted sensor has no business
 claiming, PCK at fixed thresholds, and a per-joint breakdown with fingertips
 called out separately because fingertips are where the error concentrates and
 where averaging hides it.
+
+MPJPE and PCK are each computed both ways, over 21 joints and over the 20
+non-wrist joints, and the report prints both in the same table. Under root
+alignment the wrist error is identically zero, because root alignment is defined
+as subtracting the wrist from both poses, so averaging it in understates the
+error by exactly one twenty first, which is 4.76 percent. Most of this field
+prints the 21-joint figure; the paper this project checks itself against
+averages over 20. Neither convention is wrong and picking one silently is, so
+`MetricSet` carries `mpjpe` and `mpjpe_excl_root`, and `pck` and
+`pck_excl_root`, and the `include_root` parameter on the underlying functions is
+what selects between them. The 4.76 percent is worth holding next to
+`CLEAR_MARGIN`, the 10 percent by which a model has to beat a trivial baseline
+before the report calls it beaten: the convention choice alone is half of that
+margin.
+
+The raw reductions are deliberately not exported from `wristsonar.eval`. `mpjpe`,
+`pa_mpjpe`, `pck`, `per_joint_mpjpe` and `joint_errors` return bare floats and
+arrays, and everything the package exports at the top level carries a
+`Protocol`. A caller who genuinely wants an unstamped number imports it from
+`wristsonar.eval.metrics` and thereby says so.
+
+Splits normalise participant and device identity before comparing it, and refuse
+a dataset in which one identity is spelled two ways: "p1" and "P1" would
+otherwise be two people, which turns one person's data into two clean cross-user
+folds and moves the headline in the flattering direction. Sessions are
+namespaced by participant, because two people who both call their first
+recording "s1" are not sharing a session and a within-session split cut on that
+label would span both of them. Devices are deliberately not namespaced, since a
+device model is shared across people by definition and that sharing is what a
+cross-device split cuts along. A partition that repeats an index, or that uses a
+negative one, is rejected before anything else is checked: NumPy resolves -1 to
+the last sample only at indexing time, so a negative index passes both the
+overlap check and the bounds check and then aliases one sample onto both sides.
 
 The single-number version of this document: a number without its split is not a
 result, and the harness refuses to print one.

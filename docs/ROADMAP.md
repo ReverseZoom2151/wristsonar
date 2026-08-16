@@ -9,8 +9,12 @@ of it is that phase 1 precedes phase 2.
 The offline signal layer is complete and synthetic-verified. The software for
 manifest-gated data ingest, landmark preparation, split construction, guarded
 evaluation, Torch training, checkpoint export/loading and host-side Blender
-inference is also complete. No public WatchHand archive has been downloaded,
-no landmark sidecars have been generated, and no trained weights or benchmark
+inference is also complete. Since the last revision the preprocessing contract
+has been pulled out into one shared object that both window builders take and
+every checkpoint records, the callback synchroniser has been rebuilt around
+sample counting with a periodic re-lock, and reporting across splits has a
+container of its own. No public WatchHand archive has been downloaded, no
+landmark sidecars have been generated, and no trained weights or benchmark
 result exists. Those are external-data milestones, not wording changes this
 repository can make true on its own.
 
@@ -40,7 +44,10 @@ baselines, and the calibration-curve reporter.
 
 Exits when a mean-pose baseline produces a full honest report: all four splits,
 the calibration curve, the held-out-pose evaluation, and the guard report, each
-row carrying its protocol.
+row carrying its protocol. The shape of that report now exists in code.
+`MultiSplitReport` holds one single-split `Report` each and refuses a headline
+while any of the honest splits is missing, so the exit criterion is a thing the
+harness can be asked for rather than a description of one.
 
 This deliberately precedes any modelling. A benchmark that arrives after the
 model is a benchmark shaped by the model, whatever the intentions of whoever
@@ -61,6 +68,12 @@ weights and results pending the public archive and generated sidecars.**
 Train the published architecture on the public data. Land inside the published
 error bars on all four splits, and say plainly where that does not happen.
 
+Released weights carry the preprocessing they were trained under, and loading
+one compares that against the pipeline about to feed it and refuses on any
+difference, before it touches the weight file. A sidecar written under the
+previous schema is refused rather than read with its missing fields defaulted,
+so nothing published before this existed can be loaded and believed.
+
 Exits with released weights, which is the thing that does not currently exist
 anywhere in this field. See PRIOR_ART.md: eight published systems, zero runnable
 artifacts.
@@ -68,12 +81,27 @@ artifacts.
 ## Phase 3. Capture app
 
 **Status: host capture contract, callback synchronization, versioned raw PCM
-transport, listener, and Wear OS sender implemented; Android compilation and
-APK assembly verified; hardware validation pending.**
+transport, listener and Wear OS sender written; the sender has not been compiled
+since it was last changed and has never run on a watch.**
 
 Wear OS duplex capture. This is where platform reality bites: sample-rate lies,
 automatic gain control, buffer underruns, and the fact that two hours of
 continuous sensing drains 78 percent of a Galaxy Watch 3 battery.
+
+A debug APK was assembled against Android SDK 35 before the sender was rewritten
+to open `UNPROCESSED`, pre-roll the output ring, recover the effective rate from
+`AudioTimestamp`, and move the socket write onto a bounded queue. None of that
+has been through a compiler. The first task in this phase is `./gradlew
+:app:assembleDebug`, and the honest expectation is that it does not build first
+try.
+
+Three constants in that code are placeholders chosen by argument, and only a
+real watch can settle them: `PREROLL_FRAMES` of 2, which has to cover the output
+latency of the device rather than a guess at it; `QUEUE_FRAMES` of 120, about
+1.5 seconds, which trades how long a transport stall can last against how much
+audio is lost when it ends; and `UNDERRUN_BUDGET` of 50, which decides how many
+transmit glitches a session tolerates before it is not the session that was
+requested any more. Every one of them is wrong until measured on hardware.
 
 Exits with a live echo profile from a real wrist.
 
@@ -119,6 +147,48 @@ There would be a model that works on the dataset and a device that produces
 something else, with no bridge between them, and no amount of later engineering
 recovers that. Everything downstream of phase 1 is conditional on this check.
 
+The risk is narrower than it was, because the reproduction is now one object
+that both halves read and that every checkpoint carries, and a cross-path test
+pushes the same synthetic PCM through both window builders and requires the same
+tensor out. What remains is that two fields of that object are still statements
+about somebody else's data, and one of them cannot currently be checked. See
+the next two entries.
+
+### The declared differential lag is an argument, not a measurement
+
+The descriptor declares a differential lag of 2, and the reasoning is in
+DATA.md: the shipped differential is two frames shorter than the original rather
+than the one a plain difference loses, and of the two readings that fit, only
+one can put a frame recorded after the predicted pose inside a causal window.
+The conservative choice costs a frame of staleness and cannot flatter a number.
+That is a good argument and it is not evidence. `estimate_differential_lag`
+would settle it, but it requires the shipped differential to be reproducible
+from the shipped original, and on the real release it is expected not to be. So
+either the measurement succeeds on some session and the question closes, or the
+first live capture beside a dataset session settles it empirically. Until then a
+one-frame misalignment in the training channel is live, and it is the kind that
+degrades a number rather than announcing itself.
+
+### The peak detector's floor is marginal on the window it is aimed at
+
+`min_peak_to_noise` defaults to 4.0, and on a 78 bin crop that is a low bar: a
+handful of pure noise frames still produce a peak that clears it. The noise
+floor itself is no longer the problem, since the per-block quantile scores about
+as well as the median it replaced on the same frames and much better on a full
+profile. The threshold is what is thin, and the window is too narrow to make it
+thicker without losing real reflectors near the edges. This matters for the peak
+helpers rather than for the model, which sees the profile rather than a peak
+list, but anything built on `strongest_peak` should expect occasional confident
+nonsense until the threshold is tuned against real captures.
+
+### The Wear sender has never been compiled in its current form
+
+An earlier version of it assembled into a debug APK. The version in the tree has
+not been near a compiler, let alone a watch, so every claim about what it does
+is a claim about source code. It is listed as a risk rather than as a task
+because it is the cheapest of the outstanding items and the one most likely to
+be quietly assumed done.
+
 ### Wear OS duplex audio may not behave
 
 Playing and recording simultaneously at 48 kHz with predictable timing on a
@@ -159,7 +229,8 @@ what it is.
 The project uses public WatchHand data first, and retains the physically bounded
 clap-configuration component as a side project. The remaining prerequisites are
 not open product choices: obtain the approximately 175 GB archive with enough
-storage, generate and manifest landmark sidecars, train and publish a model,
-then validate a Wear OS capture app on one of the watches used in WatchHand.
+storage, generate and manifest landmark sidecars, measure the two undocumented
+preprocessing parameters against real sessions, train and publish a model, then
+compile the Wear sender and validate it on one of the watches used in WatchHand.
 Target-hardware selection remains open between Galaxy Watch 7, Xiaomi Watch 2
 Pro and Pixel Watch 3.

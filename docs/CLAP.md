@@ -41,8 +41,12 @@ endpoint leaves a four-dimensional null space, the self-motion manifold that
 every redundant manipulator has.
 
 And the information is simply not present. Running the capacity module on a
-four-class confusion matrix at roughly the accuracy this literature reports
-gives 0.73 bits. A perfect four-class classifier would give exactly 2.00 bits,
+four-class confusion matrix at roughly the accuracy this literature reports,
+with its errors spread evenly across the wrong classes, gives 0.73 bits. Spread
+evenly is the pessimistic reading and is stated because it is what makes the
+figure reproducible: errors concentrated in one confusable pair would carry
+more, which is the whole reason bits are the currency here and accuracy is not.
+A perfect four-class classifier would give exactly 2.00 bits,
 which is the ceiling for the merged taxonomy. Naming an arm pose at seven
 degrees of freedom, over 120 degrees, at 5 degree steps costs 32.09 bits. The
 realistic figure is short by a factor of about 44, and even the theoretical

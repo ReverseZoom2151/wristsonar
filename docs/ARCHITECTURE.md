@@ -2,9 +2,11 @@
 
 Five layers, in the order data flows through them. The offline and host-side
 layers are implemented; Wear OS hardware validation and a trained public
-checkpoint remain external validation work. The Wear module compiles to a debug
-APK against Android SDK 35. This document distinguishes those states so
-the architecture is never mistaken for a live device result.
+checkpoint remain external validation work. A debug APK was assembled against
+Android SDK 35 at one point, but the Wear sources have been rewritten since and
+have not been compiled again, so treat the device half as unbuilt. This document
+distinguishes those states so the architecture is never mistaken for a live
+device result.
 
 ## The shape of the thing
 
@@ -17,9 +19,11 @@ smartwatch (stock)
   -> sinks: OpenXR hand joints, Blender, WebSocket, MIDI
 ```
 
-Cutting across all five is `wristsonar.protocol`, which is not a layer but a
-constraint: anything that produces a reportable number carries the conditions it
-was produced under. See EVALUATION.md.
+Two things cut across all five rather than sitting in one of them.
+`wristsonar.protocol` is the rule that anything producing a reportable number
+carries the conditions it was produced under; see EVALUATION.md.
+`wristsonar.preprocess` is the rule that the training pipeline and the live
+pipeline build the same tensor; see below.
 
 ## Status
 
@@ -27,12 +31,13 @@ was produced under. See EVALUATION.md.
 |---|---|---|
 | Core types | `wristsonar.types` | Written |
 | Protocol | `wristsonar.protocol` | Written |
+| Preprocessing contract | `wristsonar.preprocess` | Written; two of its fields are declared conservatively rather than measured on the real release |
 | Signal | `wristsonar.signal` | Written and synthetic-verified |
 | Evaluation | `wristsonar.eval` | Written |
 | Data ingest | `wristsonar.data` | Written, manifest-gated |
 | Model input | `wristsonar.model` | Written; training needs public data |
 | Calibration | `wristsonar.eval.calibration` | Written |
-| Capture health and transport | `wristsonar.capture` | Written; Wear OS APK compiles, needs hardware validation |
+| Capture health and transport | `wristsonar.capture` | Host side written; the Wear sender has not been compiled since it was last changed, and has never run on a watch |
 | Host inference and sinks | `wristsonar.runtime` | Capture wire format, strict inference, JSONL/TCP and Blender written; OpenXR pending |
 
 Everything below marked as intent describes a design decision, not a
@@ -60,27 +65,101 @@ The joint list is twenty-one landmarks, the wrist plus four per digit, ordered
 to match the MediaPipe hand convention so that comparison against camera-based
 systems needs no remapping table.
 
+## The preprocessing contract
+
+This is the piece that stops a trained model and a live watch disagreeing about
+what their input is, and it is worth understanding before anything downstream
+makes sense.
+
+A model is a function of its weights and of the preprocessing those weights were
+fitted under. For most of this project's life the second argument was written
+down nowhere. The convention lived twice, once inside `SessionData.windows` on
+the training side and once inside `EchoWindowAssembler` on the capture side, and
+the two were kept in step by nothing except having been written on the same
+afternoon. Every way two copies of one convention can drift is silent. A live
+window whose peak is 6553 where training taught the model to expect roughly 1.0
+still has the right shape, the right dtype, and still produces well formed pose
+JSON. Nothing downstream can tell that the answer is meaningless.
+
+So the contract is one frozen object, `PreprocessingDescriptor` in
+`wristsonar.preprocess`, and it travels. It states the chirp, the number of bins
+kept and the array index they are kept from, the window length in frames, which
+column of a shipped differential array belongs with which original, which frame
+of a differenced pair the difference is attributed to, and what normalisation is
+applied to the assembled window. Both window builders take one and neither has
+geometry defaults of its own any more. `CheckpointMetadata` carries one, so a
+weight file records the preprocessing it was trained under, and
+`load_torch_checkpoint` compares the two before it touches the weights rather
+than after. The checkpoint and bundle schemas moved to
+`wristsonar.checkpoint/2` and `checkpoint-bundle/2` for this, and a version 1
+sidecar is refused rather than read with the missing fields defaulted, because
+defaulting them is exactly the confident wrong answer the object exists to
+prevent.
+
+It sits above `wristsonar.types` and `wristsonar.signal` and below
+`wristsonar.data` and `wristsonar.capture`, which is what lets the training path
+and the capture path both import it without importing each other.
+
+Two of its fields describe things nobody documented, so they are measured rather
+than assumed. `bin_zero_offset` is the array index that represents range zero,
+and `differential_lag` is where in WatchHand's shipped differential array the
+difference belonging with a given original sits. `estimate_bin_zero_offset` and
+`estimate_differential_lag` measure both from the shipped arrays, and
+`SessionData.verify_preprocessing` runs them per session so a corpus build stops
+when the measurement contradicts the descriptor a checkpoint will carry. The lag
+is the weaker of the two: the released differential is not reproducible from the
+released original, the measurement therefore returns nothing, and the declared
+value stands on an argument rather than on evidence. See DATA.md.
+
+The claim that the two paths agree is a measurement, not an assertion.
+`tests/test_preprocessing_contract.py` pushes identical synthetic PCM through
+the training corpus builder and through the live assembler and requires the two
+tensors to match, which is the only form of the claim that can fail.
+
 ## Capture layer
 
-The device-independent capture contract is written. `DuplexValidator` rejects
-streams that silently resample 48 kHz audio, change the 600-sample chirp frame,
-or contain discontinuities. `PcmSynchronizer` turns arbitrary callback
-boundaries into periodic 600-sample chirp frames using the direct acoustic path
-only for timing. A discontinuity discards partial history and forces a new
-lock. `RawPcmWireFrame` supplies a versioned, length-delimited raw PCM transport
-between a watch and this host layer. The Wear OS sender is in `wear/`; its debug
-APK compiles locally, while hardware validation remains pending.
+The device-independent capture contract is written. `PcmSynchronizer` turns
+arbitrary callback boundaries into whole chirp frames, and the way it does that
+changed: alignment is now carried by counting samples forward from a single
+correlation lock, and the lock is re-scored every `relock_frames`, one second by
+default. Timestamps are not the alignment authority and cannot be, because a
+callback stamp is taken after `AudioRecord.read` returns and carries
+milliseconds of scheduling jitter, while one range bin is one sample, 20.8
+microseconds. They keep two coarse jobs: a jump past `gap_tolerance_s`, 30 ms,
+ends the segment and forces a fresh lock, and samples delivered divided by
+elapsed monotonic time over a two second baseline gives `observed_sample_rate`.
+That division is the only honest resampling detector on the host side. A stream
+that cannot lock says so rather than waiting quietly: `locked` is never true
+while nothing is being emitted, `status` carries a printable reason, and
+`LiveCaptureProcessor` raises once it has consumed `lock_timeout_s` of unlocked
+audio.
 
-A Wear OS application that plays and records simultaneously. The hard parts are
-duplex timing, disabling automatic gain control and noise suppression where the
-platform allows it, and detecting when the operating system has silently
-resampled or applied processing anyway. That last one matters more than it
-sounds: the differential echo profile is a difference of amplitudes, so a
-time-varying gain manufactures motion that did not happen.
+`DuplexValidator` no longer claims to detect resampling, because it never could.
+It reads the rate the watch declares, and a resampled stream declares the same
+number. What it checks is what it can see: that the declared rate does not change
+mid-session, that the frame size matches the chirp, and that the segment is
+continuous. `RawPcmWireFrame` supplies a versioned, length-delimited raw PCM
+transport between a watch and this host layer.
+
+The Wear OS sender in `wear/` plays and records simultaneously. It opens
+`UNPROCESSED` where the device advertises
+`PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED` and falls back to
+`VOICE_RECOGNITION`, which is a weaker claim and is documented as one. It
+pre-rolls the output ring before `play()` so that the guaranteed startup
+underrun stops counting against the session, tolerates later underruns up to a
+budget instead of dying on the first, recovers the effective sample rate from
+`AudioTimestamp`, and hands the TCP write to a bounded queue on its own thread
+so that a stalled socket drops frames rather than overflowing the record ring.
+None of that has been compiled since it was written, and none of it has run on a
+watch. The hard parts remain duplex timing and gain control: automatic gain
+control across 18 to 21 kHz destroys the amplitude relationships the
+differential echo profile is made of, `AutomaticGainControl.create()` returning
+null usually means the gain control is in the HAL where it cannot be observed,
+and no part of this stack can detect that it happened.
 
 LLAP (MIT licence, github.com/Samsonsjarkal/LLAP) is the reference
 implementation for the phase-tracking half of this on iOS and is worth reading
-before writing any of it.
+before trusting anything here on a real device.
 
 This layer is where platform reality bites, and it is deliberately late in the
 build order. See ROADMAP.md, phase 3.
@@ -106,11 +185,34 @@ in a lag mapping produces plausible-looking numbers rather than a crash, and the
 only defence against that is pinning the pipeline against synthetic echoes with
 known delay and amplitude.
 
+A cropped profile carries the one-way distance of its own bin zero as
+`range_offset_m`, and the peak helpers take it, because a crop otherwise reads
+every range low by the near edge. `peak_ranges_of` and `strongest_peak_of` take
+the profile itself and so cannot be called wrongly; the two-argument forms are
+still there for bare arrays. `differential_profiles` carries the offset through
+and refuses inputs that disagree about it, since bin k of two profiles cropped
+to different near edges is two different distances and subtracting them is not a
+difference in time.
+
+The noise floor is the other thing worth knowing about. It used to be a global
+median, which works while most bins are noise and fails on exactly the window
+this project recommends: on a hand-sized crop the median sits on the signal, the
+threshold rises above the peak, and the detector goes silent on the one window
+it is aimed at. It is now a low quantile per block of 96 bins, blocks combined
+by median, rescaled by the Rayleigh quantile-to-median factor so that thresholds
+calibrated against the old median still mean what they meant, and capped at the
+profile maximum. The blocking is not decoration. A quantile taken over a whole
+profile lands in the correlation taper, where noise decays as sqrt(1 - k/N)
+because only N minus k samples still overlap at lag k, and reads far too low,
+which is a worse failure than the one it fixes.
+
 ## Model layer
 
-Written as a causal 2 by 60 by 96 window builder plus a compact optional Torch
-CNN baseline. The public dataset must still be downloaded and its landmark
-sidecars generated before any training claim can be made.
+Written as a causal window builder plus a compact optional Torch CNN baseline.
+The window shape is 2 by 60 by 96 because that is what the shared descriptor
+says, not because this layer decided it. The public dataset must still be
+downloaded and its landmark sidecars generated before any training claim can be
+made.
 
 A small vision transformer or CNN over the echo-profile image, starting by
 reproducing the published FastViT-T12 setup on the WatchHand data. The rule for
@@ -156,7 +258,10 @@ Written, and the actual product.
 `wristsonar.eval` covers split construction with leakage assertions, metrics
 including MPJPE, PA-MPJPE, PCK and per-joint breakdowns with fingertips called
 out, the three trivial baselines, the calibration sweep, the shortcut-learning
-guards, and the report writer. Every reportable value carries a `Protocol`.
+guards, and the report writer. Every reportable value carries a `Protocol`. One
+`Report` holds one split, since rows in a table have to be comparable to be a
+comparison at all, and `MultiSplitReport` holds one `Report` per split and is
+what a complete result looks like.
 
 It is documented in full in EVALUATION.md rather than here, because it is the
 argument of the project rather than a component of it.
@@ -165,7 +270,10 @@ argument of the project rather than a component of it.
 
 Dataset ingest is written and manifest-gated. DATA.md covers the WatchHand
 release, its format, and what must be verified before anything downstream can
-be trusted. The single largest risk remains: the release is echo profiles rather
-than raw audio, and if those profiles were produced by processing that cannot be
-reproduced from a live device, the capture layer and model layer will never meet.
-See ROADMAP.md.
+be trusted. The single largest risk is unchanged in kind and narrower in scope:
+the release is echo profiles rather than raw audio, and if those profiles were
+produced by processing that cannot be reproduced from a live device, the capture
+layer and the model layer will never meet. The shared descriptor above is what
+turns that from a risk nobody can act on into two named parameters, one of which
+is measurable against the shipped arrays and one of which, so far, is not. See
+ROADMAP.md.

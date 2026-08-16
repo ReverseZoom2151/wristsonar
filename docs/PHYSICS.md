@@ -29,10 +29,16 @@ Most of the energy in any single profile is the device itself: the direct
 leakage path from speaker to microphone across the watch body, plus the static
 reflection from the wrist the watch is strapped to. Subtracting consecutive
 frames gives the differential profile, which suppresses everything that did not
-move and leaves the fingers. This differential profile, cropped to the range
-window that can plausibly contain a hand, is what the model sees. Cropping is
-not an optimisation. Bins outside that window carry room reflections, and a
-model handed room reflections will learn the room.
+move and leaves the fingers. The model sees both channels, the original and the
+differential, cropped to the range window that can plausibly contain a hand and
+stacked over about a second of frames. Cropping is not an optimisation. Bins
+outside that window carry room reflections, and a model handed room reflections
+will learn the room.
+
+Differencing has a cost worth stating alongside its benefit: it is a high-pass
+filter in time, so a hand held perfectly still becomes invisible in that
+channel. These systems track motion and infer pose. They do not measure a
+static hand.
 
 ## Why being on the body changes the problem
 
@@ -229,10 +235,25 @@ geometry is unavailable by construction.
 The operating system applies automatic gain control and noise suppression, and
 on some platforms it will silently resample. AGC in particular is corrosive
 here, because the differential profile is a difference of amplitudes and a
-time-varying gain forges motion that did not happen. Where the platform allows
-these to be disabled, the capture layer disables them; where it does not, the
-capture layer has to detect that processing has been applied rather than assume
-it has not.
+time-varying gain forges motion that did not happen. What can be done about it
+is less than it sounds. The sender opens the `UNPROCESSED` source where the
+device advertises support for it and falls back to `VOICE_RECOGNITION`
+otherwise, which is only the least speech-processed of the remaining public
+sources and is not the same claim. `AutomaticGainControl.create()` returning
+null is not evidence that no gain control is running; it usually means the gain
+control lives in the HAL, where it can be neither observed nor disabled. So
+processing that has been applied anyway is, in general, undetectable from
+inside the application.
+
+Resampling is the one exception, and only because it can be timed rather than
+inspected. A declared sample rate is useless here: `AudioRecord.getSampleRate()`
+returns the rate that was requested, and a resampled stream reports the same
+number on the wire, so comparing it to 48000 compares a constant to a constant.
+Dividing the samples that actually arrived by elapsed monotonic time over a
+multi-second baseline does not, and that measurement is made independently on
+the watch from `AudioTimestamp` and on the host from packet timestamps. Nothing
+else in this stack detects platform processing, and the documentation that used
+to say otherwise was wrong.
 
 Audible leakage is real. Across 30 commodity devices transmitting 18 to 22 kHz
 at 80 percent volume, audible low-frequency leakage from amplifier nonlinearity
