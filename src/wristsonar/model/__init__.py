@@ -12,6 +12,7 @@ from wristsonar.model.normalization import (
     NormalizationError,
     PoseNormalizer,
 )
+from wristsonar.model.predictor import NormalizedPosePredictor, PredictorError
 from wristsonar.model.torch_model import ModelUnavailableError, create_pose_cnn
 
 __all__ = [
@@ -20,8 +21,10 @@ __all__ = [
     "FeatureNormalizer",
     "ModelUnavailableError",
     "NormalizationError",
+    "NormalizedPosePredictor",
     "PoseNormalizer",
     "PoseWindows",
+    "PredictorError",
     "WindowExample",
     "create_pose_cnn",
 ]
