@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +81,17 @@ def load_pose_cnn(weights: Path, *, width: int = 32) -> Any:
     try:
         state = torch.load(weights, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=True)
-    except (RuntimeError, ValueError, TypeError) as error:
+    except (
+        RuntimeError,
+        ValueError,
+        TypeError,
+        # A truncated or non-Torch file surfaces from the unpickler rather than
+        # from Torch, so without these the caller gets a bare pickle traceback
+        # that never names the offending path. Reporting a corrupt checkpoint
+        # loudly is exactly what this function promises to do.
+        pickle.UnpicklingError,
+        EOFError,
+    ) as error:
         raise ValueError(f"invalid pose-cnn weights {weights}: {error}") from error
     model.eval()
     return model
