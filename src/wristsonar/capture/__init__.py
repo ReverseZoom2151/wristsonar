@@ -1,6 +1,7 @@
 """Raw capture validation, alignment, and causal window construction."""
 
 from wristsonar.capture.health import CaptureHealth, DuplexValidator
+from wristsonar.capture.listener import consume_raw_pcm_connection
 from wristsonar.capture.live import LiveCaptureError, LiveCaptureProcessor
 from wristsonar.capture.processor import (
     CaptureProcessingError,
@@ -32,6 +33,7 @@ __all__ = [
     "RawPcmWireFrame",
     "SynchronizationError",
     "WireError",
+    "consume_raw_pcm_connection",
     "decode_raw_pcm",
     "encode_raw_pcm",
     "recv_raw_pcm",
