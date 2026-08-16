@@ -18,6 +18,13 @@ watch with a speaker and microphone. The debug APK has been compiled locally
 against Android SDK 35. It has not been installed or validated on a physical
 watch.
 
+The repository includes the Gradle wrapper, so a command-line build is:
+
+```bash
+cd wear
+./gradlew :app:assembleDebug
+```
+
 Before interpreting a pose, validate all of the following on the target watch:
 
 1. `AudioRecord.sampleRate` remains 48 kHz while the service is active.
