@@ -14,6 +14,16 @@ object Fmcw {
     private const val tukeyAlpha = 0.25
     private const val amplitude = 0.20
 
+    /**
+     * Nanoseconds of audio in one transmitted frame, 12.5 ms.
+     *
+     * Used to back-date a stamp taken once a read has returned, because the
+     * host wire format defines a packet timestamp as the capture time of the
+     * first sample and not the last. Reading it the other way is a fixed sign
+     * error of exactly this constant.
+     */
+    val frameDurationNanos: Long = frameSamples.toLong() * 1_000_000_000L / sampleRate
+
     /** A PCM-16 Tukey-windowed linear up-sweep, emitted once every 12.5 ms. */
     fun pcm16(): ShortArray = ShortArray(frameSamples) { sample ->
         val t = sample.toDouble() / sampleRate

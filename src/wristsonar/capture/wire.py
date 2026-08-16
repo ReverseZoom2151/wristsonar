@@ -17,6 +17,7 @@ from numpy.typing import NDArray
 
 __all__ = [
     "RawPcmWireFrame",
+    "TruncatedFrameError",
     "WireError",
     "decode_raw_pcm",
     "encode_raw_pcm",
@@ -33,9 +34,26 @@ class WireError(ValueError):
     """A peer sent data that is not one Wristsonar raw PCM frame."""
 
 
+class TruncatedFrameError(WireError):
+    """A peer vanished part way through a frame it had already announced.
+
+    Its own class because a watch that died mid-frame and a watch that
+    finished cleanly are different events, and a listener that reports both as
+    "the stream ended" makes a crashed device look like a completed session.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class RawPcmWireFrame:
-    """One timestamped signed-16-bit microphone callback from the watch."""
+    """One timestamped signed-16-bit microphone callback from the watch.
+
+    ``timestamp_ns`` is the capture time of the *first* sample in ``samples``,
+    on the sender's boot-time monotonic clock.  The Wear sender back-dates the
+    stamp it takes after ``AudioRecord.read`` returns, or derives it from
+    ``AudioRecord.getTimestamp()``, precisely so that this field means what it
+    says.  Reading it as the last sample instead would be a fixed sign error of
+    one frame period, 12.5 ms at the WatchHand chirp.
+    """
 
     samples: NDArray[np.int16]
     timestamp_ns: int
@@ -102,10 +120,18 @@ def recv_raw_pcm(connection: socket) -> RawPcmWireFrame:
     header or several audio frames, so using it as a message boundary silently
     corrupts audio. This helper reads the fixed header first, then exactly the
     signed-16-bit payload count stated by that header.
+
+    A clean end of stream raises ``EOFError``.  A peer that disappears after
+    announcing a frame raises ``TruncatedFrameError``, so the two cannot be
+    confused by a caller that only wants to stop on the first.
     """
     header = _recv_exact(connection, _HEADER.size)
-    if header is None:
+    if not header:
         raise EOFError("peer closed before a raw PCM header")
+    if len(header) < _HEADER.size:
+        raise TruncatedFrameError(
+            f"peer closed after {len(header)} of {_HEADER.size} header bytes"
+        )
     magic, version, _sample_rate, _timestamp_ns, count = _HEADER.unpack(header)
     if magic != _MAGIC:
         raise WireError(f"wrong magic {magic!r}")
@@ -113,19 +139,27 @@ def recv_raw_pcm(connection: socket) -> RawPcmWireFrame:
         raise WireError(f"unsupported raw PCM wire version {version}")
     if not 1 <= count <= _MAX_SAMPLES:
         raise WireError(f"invalid sample count {count}")
-    body = _recv_exact(connection, count * np.dtype("<i2").itemsize)
-    if body is None:
-        raise EOFError("peer closed in the middle of a raw PCM frame")
+    wanted = count * np.dtype("<i2").itemsize
+    body = _recv_exact(connection, wanted)
+    if len(body) < wanted:
+        raise TruncatedFrameError(
+            f"peer closed after {len(body)} of {wanted} announced PCM bytes"
+        )
     return decode_raw_pcm(header + body)
 
 
-def _recv_exact(connection: socket, size: int) -> bytes | None:
+def _recv_exact(connection: socket, size: int) -> bytes:
+    """Read up to ``size`` bytes, returning short only at end of stream.
+
+    Returning what arrived rather than ``None`` is what lets the caller tell a
+    peer that closed between frames from one that closed inside a frame.
+    """
     chunks: list[bytes] = []
     remaining = size
     while remaining:
         chunk = connection.recv(remaining)
         if not chunk:
-            return None
+            break
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)

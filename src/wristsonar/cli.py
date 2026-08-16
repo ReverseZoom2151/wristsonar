@@ -44,14 +44,23 @@ def _verify(args: argparse.Namespace) -> int:
 
 def _listen(args: argparse.Namespace) -> int:
     """Run the one-device raw PCM listener and emit pose JSON Lines to stdout."""
-    from wristsonar.capture import LiveCaptureProcessor, consume_raw_pcm_connection
+    from wristsonar.capture import (
+        LiveCaptureError,
+        LiveCaptureProcessor,
+        WatchSessionError,
+        consume_raw_pcm_connection,
+    )
     from wristsonar.capture.wire import RawPcmWireFrame
     from wristsonar.model.load import load_torch_checkpoint
     from wristsonar.runtime import JsonLinesSink, RealtimeInference
 
     loaded = load_torch_checkpoint(args.weights, args.bundle)
     metadata = loaded.bundle.metadata
-    processor = LiveCaptureProcessor()
+    # The checkpoint decides the crop and window, so build the processor from
+    # the bundle rather than from the defaults it is about to be validated
+    # against.  Otherwise a checkpoint with any other geometry connects, runs,
+    # and only fails once the first window is complete.
+    processor = LiveCaptureProcessor(descriptor=metadata.preprocessing)
     inference = RealtimeInference(
         predict=loaded.predictor,
         sink=JsonLinesSink(sys.stdout),
@@ -60,9 +69,11 @@ def _listen(args: argparse.Namespace) -> int:
         expected_shape=(2, metadata.crop_bins, metadata.window_frames),
     )
     predicted = 0
+    packets = 0
 
     def process(packet: RawPcmWireFrame) -> None:
-        nonlocal predicted
+        nonlocal predicted, packets
+        packets += 1
         for capture in processor.push(packet):
             inference.process(capture)
             predicted += 1
@@ -76,14 +87,25 @@ def _listen(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         connection, peer = listener.accept()
-        with connection:
-            packets = consume_raw_pcm_connection(connection, process)
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        status = 0
+        try:
+            with connection:
+                consume_raw_pcm_connection(connection, process)
+        except WatchSessionError as error:
+            print(f"watch session failed: {error}", file=sys.stderr)
+            status = 1
+        except LiveCaptureError as error:
+            print(f"capture is not usable: {error}", file=sys.stderr)
+            status = 1
         print(
             f"closed {peer[0]}:{peer[1]} after {packets} raw packets and "
             f"{predicted} pose frames",
             file=sys.stderr,
         )
-    return 0
+        print(f"synchronisation: {processor.sync_status.reason}", file=sys.stderr)
+        print(f"capture health: {processor.health.reason}", file=sys.stderr)
+    return status
 
 
 def parser() -> argparse.ArgumentParser:
