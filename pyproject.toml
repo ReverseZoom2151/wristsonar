@@ -10,6 +10,7 @@ dependencies = ["numpy>=1.26,<2.0", "scipy>=1.11,<1.15"]
 
 [project.optional-dependencies]
 train = ["torch>=2.2"]
+prepare = ["opencv-python>=4.9", "mediapipe>=0.10"]
 dev = [
     "pytest>=8.0",
     "hypothesis>=6.100",
@@ -67,4 +68,8 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["cv2", "cv2.*", "mediapipe", "mediapipe.*"]
 ignore_missing_imports = true
