@@ -19,6 +19,13 @@ make install
 `make install` installs the package in editable mode with its `dev` extra,
 which brings in pytest, hypothesis, ruff and mypy.
 
+Use the virtual environment rather than a global interpreter. The project pins
+`numpy<2.0`, and NumPy 2.x ships type stubs written with syntax that only
+parses on Python 3.12, while mypy is deliberately targeted at the supported
+floor of 3.11. Running the checks against a globally installed NumPy 2.x fails
+inside NumPy's own stub file before mypy reaches any of our code, which reads
+as a repository fault and is not one.
+
 ## The four checks
 
 Every change has to pass the same four things CI runs.
