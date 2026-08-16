@@ -158,3 +158,42 @@ def test_a_lone_reflector_produces_exactly_one_reported_peak(
         peaks = peak_ranges(profile, bm)
         assert len(peaks) == 1
         assert peaks[0].range_m == pytest.approx(float(range_m), abs=bm)
+
+
+def test_a_reflector_past_the_unambiguous_range_folds_back_onto_the_hand(
+    config: ChirpConfig, reference: NDArray[np.complex128]
+) -> None:
+    """The ghost the simulator's `alias_beyond_range` flag models, measured.
+
+    Chirps go out back to back, so the echo of chirp k-1 from a reflector
+    further away than `max_unambiguous_range` arrives during chirp k and the
+    matched filter reads it at `range - max_unambiguous_range`. That is real
+    FMCW behaviour, not a simulator artefact, and it is the reason a wall
+    2.24 m away can appear as a fingertip at 10 cm. The claim is only worth
+    stating if the fold-back distance is exact, so it is checked as a number.
+
+    A real device breaks the ambiguity with a guard interval or by dithering
+    the chirp period. This layer cannot, and this test is where that limit is
+    on the record rather than in a comment.
+    """
+    bm = bin_metres_for(config.sample_rate)
+    unambiguous = config.max_unambiguous_range
+    for beyond in (0.10, 0.30):
+        distant = unambiguous + beyond
+        ghosted = matched_filter(
+            simulate_frame(
+                config, [Reflector(distant, 1.0)], alias_beyond_range=True
+            ),
+            reference,
+        )
+        peak = strongest_peak(ghosted, bm)
+        assert peak is not None
+        assert peak.range_m == pytest.approx(beyond, abs=bm)
+
+        # Without the previous chirp in the train there is nothing at all: the
+        # echo lands entirely after the frame, so the ghost is the wrap and not
+        # some near-field leakage the simulator adds anyway.
+        alone = matched_filter(
+            simulate_frame(config, [Reflector(distant, 1.0)]), reference
+        )
+        assert float(np.max(alone)) == 0.0

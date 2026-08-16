@@ -343,8 +343,10 @@ def helmholtz_frequency_hz(
     is neither cleanly flanged nor cleanly unflanged, so treat this as a
     parameter with roughly 20 percent slack rather than a constant.
     """
-    if volume_m3 <= 0.0 or neck_area_m2 <= 0.0 or neck_length_m < 0.0:
+    if volume_m3 <= 0.0 or neck_area_m2 <= 0.0:
         raise ValueError("volume and neck area must be positive")
+    if neck_length_m < 0.0:
+        raise ValueError("neck length cannot be negative")
     radius = (
         math.sqrt(neck_area_m2 / math.pi) if neck_radius_m is None else neck_radius_m
     )

@@ -138,6 +138,57 @@ class TestDifferential:
         )
         assert differential_profiles([only]) == []
 
+    def test_the_crop_offset_survives_differencing(self) -> None:
+        """Differencing must not undo what cropping recorded.
+
+        The natural order is crop then difference, and a difference that built
+        its output with the default offset of zero would put every range in
+        the differenced sequence back to reading low by the near edge, which
+        is exactly the defect `range_offset_m` was added to close.
+        """
+        config = ChirpConfig(sample_rate=SAMPLE_RATE)
+        recording = simulate_recording(
+            config,
+            [
+                [Reflector(range_m=0.12, amplitude=1.0)],
+                [Reflector(range_m=0.16, amplitude=1.0)],
+            ],
+        )
+        cropped = [
+            p.crop(0.02, 0.30) for p in profiles_from_recording(recording, config)
+        ]
+
+        diff = differential_profiles(cropped)[0]
+        assert diff.range_offset_m == cropped[0].range_offset_m
+        assert diff.range_offset_m > 0.015
+
+        arrived = int(np.argmax(diff.samples))
+        # The apex of a signed difference sits between the bin the reflector
+        # arrived in and the one it left, so this is deliberately a window
+        # rather than a point. What is exact is the offset arithmetic below.
+        assert 0.10 < diff.range_of_bin(arrived) < 0.20
+        assert diff.range_of_bin(arrived) - arrived * BIN_M == pytest.approx(
+            diff.range_offset_m
+        )
+
+    def test_profiles_cropped_differently_are_refused(self) -> None:
+        """Bin k of two differently cropped profiles is two different distances.
+
+        Subtracting them is not a difference in time, so it is refused rather
+        than producing a plausible array with no meaning. Same length and same
+        bin size, so only the offset separates them and only the offset check
+        can catch it.
+        """
+        samples = np.zeros(64, dtype=np.float32)
+        near = EchoProfile(
+            samples=samples, bin_metres=BIN_M, timestamp_s=0.0, range_offset_m=0.02
+        )
+        far = EchoProfile(
+            samples=samples, bin_metres=BIN_M, timestamp_s=1.0, range_offset_m=0.05
+        )
+        with pytest.raises(ValueError, match="different range calibrations"):
+            differential_profiles([near, far])
+
 
 class TestNormaliseAndSegment:
     def test_an_all_zero_frame_survives_normalisation(self) -> None:

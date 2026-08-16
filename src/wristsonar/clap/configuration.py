@@ -36,7 +36,8 @@ along the confusion structure and defaults to the merged scheme:
     CUPPED_NATURAL   A1, P2             the P2-to-A1 confusion pair
     FLAT             A1-, P1, A2        the P1-to-A2 pair plus flat A1-,
                                         whose prototype frequency sits
-                                        between them
+                                        between that pair and the cupped
+                                        naturals below it
     FINGERS_TO_PALM  A3, P3             the high, broad, small-cavity end
 
 Four classes, chance 25 percent instead of 12.5 percent, and the merges

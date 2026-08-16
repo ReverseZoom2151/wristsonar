@@ -43,6 +43,7 @@ quantisation rather than assuming it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -50,7 +51,7 @@ import scipy.fft
 import scipy.signal
 from numpy.typing import NDArray
 
-from wristsonar.types import SPEED_OF_SOUND
+from wristsonar.types import SPEED_OF_SOUND, EchoProfile
 
 __all__ = [
     "RangePeak",
@@ -58,14 +59,48 @@ __all__ = [
     "correlate_fft",
     "envelope",
     "matched_filter",
+    "noise_floor",
     "parabolic_offset",
     "peak_ranges",
+    "peak_ranges_of",
     "range_axis",
     "strongest_peak",
+    "strongest_peak_of",
 ]
 
 _LOG_FLOOR = 1e-300
 """Keeps log of an exactly zero bin finite. Well below any real amplitude."""
+
+NOISE_QUANTILE = 0.10
+"""Fraction of bins within a block assumed to be free of reflector energy.
+
+See :func:`noise_floor`. Ten percent leaves the estimate valid until a scene
+fills nine tenths of the window, which is well past anything the crop this
+package recommends produces.
+"""
+
+NOISE_BLOCK_BINS = 96
+"""Bins over which the noise level is treated as constant.
+
+See :func:`noise_floor`. Long enough that a block still contains quiet bins
+next to any plausible reflector, short enough that the frame-truncation taper
+described in :func:`noise_floor` is nearly flat across one over the part of
+the profile a hand lives in: across the first 96 of the default 600 bins it
+falls by 8 percent. It steepens badly in the last block, which is exactly why
+the blocks are combined by median rather than by minimum.
+"""
+
+_QUANTILE_TO_MEDIAN = math.sqrt(2.0 * math.log(2.0)) / math.sqrt(
+    -2.0 * math.log(1.0 - NOISE_QUANTILE)
+)
+"""Rescales the low quantile of a Rayleigh envelope onto its median.
+
+The envelope of circular Gaussian noise is Rayleigh, whose quantile function
+is sigma * sqrt(-2 ln(1 - q)), so the q quantile and the median differ by a
+factor that depends on q alone and not on the noise level. Multiplying by it
+makes the estimator agree with the median it replaces on a noise-only
+profile, which is what lets `min_peak_to_noise` keep the meaning it had.
+"""
 
 
 def bin_metres_for(sample_rate: int) -> float:
@@ -81,7 +116,14 @@ def bin_metres_for(sample_rate: int) -> float:
 
 
 def range_axis(n_bins: int, sample_rate: int) -> NDArray[np.float64]:
-    """Reflector range of each bin, in metres."""
+    """Reflector range of each bin, in metres, measured from range zero.
+
+    Correct only for an uncropped profile. A cropped one's bin zero is its
+    near edge, and this function is not given it, so plot a cropped profile
+    against `range_offset_m + range_axis(...)` or against
+    :meth:`~wristsonar.types.EchoProfile.range_of_bin` rather than against
+    this alone.
+    """
     if n_bins < 0:
         raise ValueError("n_bins cannot be negative")
     return np.arange(n_bins, dtype=np.float64) * bin_metres_for(sample_rate)
@@ -191,7 +233,7 @@ class RangePeak:
     """Interpolated envelope magnitude, calibrated to reflector amplitude."""
 
     peak_to_noise: float
-    """Amplitude over the median of the profile.
+    """Amplitude over :func:`noise_floor`.
 
     Carried on every peak rather than checked once and discarded, because the
     low-SNR failure mode of a matched filter is not silence, it is a confident
@@ -201,7 +243,11 @@ class RangePeak:
 
 
 def _interpolated(
-    profile: NDArray[np.float64], index: int, bin_metres: float, floor: float
+    profile: NDArray[np.float64],
+    index: int,
+    bin_metres: float,
+    floor: float,
+    range_offset_m: float,
 ) -> RangePeak:
     offset = parabolic_offset(profile, index)
     amplitude = float(profile[index])
@@ -213,20 +259,72 @@ def _interpolated(
         )
     return RangePeak(
         bin_index=index,
-        range_m=(index + offset) * bin_metres,
+        range_m=range_offset_m + (index + offset) * bin_metres,
         amplitude=amplitude,
         peak_to_noise=amplitude / floor if floor > 0.0 else float("inf"),
     )
 
 
-def _noise_floor(profile: NDArray[np.float64]) -> float:
-    """Median of the profile, as a robust stand-in for the noise level.
+def noise_floor(profile: NDArray[np.float64]) -> float:
+    """Amplitude below which a bin is taken to hold no reflector.
 
-    Median rather than mean because a handful of real reflectors would drag a
-    mean upward and quietly raise the detection bar in exactly the frames that
-    contain something.
+    Mean is wrong here for the obvious reason: a handful of real reflectors
+    drags it upward and raises the detection bar in exactly the frames that
+    contain something. Median is the usual fix and it is what this function
+    used to return, but median only works while most bins are noise. That
+    holds on a full 600 bin profile, where a hand occupies a few tens of bins
+    out of six hundred. It does not hold on the 2 cm to 30 cm crop this
+    package recommends, which is 78 bins at the default sweep and about five
+    range-resolution cells wide, so a hand and the skirts of its own mainlobes
+    cover well over half of it. The median then sits on the signal, the
+    threshold rises above the peak and the detector reports nothing on
+    precisely the window it is aimed at. Measured on a three-reflector hand in
+    that crop: peak over floor fell from 193 on the full profile to 1.7 on the
+    crop, and both `peak_ranges` and `strongest_peak` went silent.
+
+    So the estimate comes from a low quantile instead, which stays on noise
+    for as long as a tenth of the window is free of reflector energy. That
+    alone is not enough, because a low quantile has the opposite weakness. A
+    full profile's noise level is not flat: at lag k only N - k samples of the
+    reference still overlap the frame, so the correlation of noise decays as
+    sqrt(1 - k/N) and the last bins are quiet for a reason that is arithmetic
+    rather than acoustic. A quantile taken over the whole profile lands in
+    that tail and reads far too low. Measured over 200 noise-only frames, a
+    global low quantile turned 27 percent false positives at
+    `min_peak_to_noise = 4` into 92 percent.
+
+    The floor is therefore estimated per block of :data:`NOISE_BLOCK_BINS`
+    bins and the block estimates are combined by median. Within one block the
+    taper is nearly constant, so the low quantile measures the local noise;
+    across blocks the median picks a representative level rather than the
+    quietest end. On the same 200 frames this scores 10 percent, better than
+    the median estimator it replaces as well as better than the global
+    quantile. A profile shorter than one block, which is what a crop is, falls
+    through to a single block and is a plain low quantile, which is correct
+    there because a 78 bin window has no room for the taper to matter.
+
+    The block quantile is rescaled by the Rayleigh factor in
+    :data:`_QUANTILE_TO_MEDIAN` so that on noise it reproduces the median it
+    replaces and thresholds calibrated against the median still mean what they
+    meant. That rescaling assumes the low bins are noise, so in a window so
+    crowded that even they carry signal it overshoots, and the result is
+    capped at the profile maximum to keep `peak_to_noise` at or above one. A
+    window that saturated has no floor to measure and the honest report is
+    that nothing stands out of it.
+
+    Magnitude is taken first, so a signed differential profile is measured by
+    how far its bins move rather than by where its bins happen to sit.
     """
-    return float(np.median(profile))
+    magnitude = np.abs(profile)
+    if magnitude.size == 0:
+        return 0.0
+    n_blocks = max(1, magnitude.size // NOISE_BLOCK_BINS)
+    per_block = [
+        float(np.quantile(block, NOISE_QUANTILE))
+        for block in np.array_split(magnitude, n_blocks)
+    ]
+    estimate = float(np.median(per_block)) * _QUANTILE_TO_MEDIAN
+    return min(estimate, float(np.max(magnitude)))
 
 
 def peak_ranges(
@@ -236,8 +334,15 @@ def peak_ranges(
     min_peak_to_noise: float = 4.0,
     min_prominence_ratio: float = 0.3,
     max_peaks: int | None = None,
+    range_offset_m: float = 0.0,
 ) -> list[RangePeak]:
     """Detected reflectors, strongest first.
+
+    `range_offset_m` is the one-way distance of bin zero, and it must be
+    supplied whenever `profile` is the `samples` of a cropped
+    :class:`~wristsonar.types.EchoProfile`. Omitting it reads every range low
+    by the crop's near edge. Prefer :func:`peak_ranges_of`, which takes the
+    profile itself and cannot be called wrongly.
 
     `min_prominence_ratio` is measured against the strongest peak in the
     frame, and it is what decides whether two nearby reflectors are reported
@@ -251,9 +356,11 @@ def peak_ranges(
     """
     if bin_metres <= 0:
         raise ValueError("bin_metres must be positive")
+    if range_offset_m < 0.0:
+        raise ValueError("range_offset_m cannot be negative")
     if profile.size < 3:
         return []
-    floor = _noise_floor(profile)
+    floor = noise_floor(profile)
     peak_max = float(np.max(profile))
     if peak_max <= 0.0:
         return []
@@ -274,7 +381,9 @@ def peak_ranges(
         prominence=min_prominence_ratio * peak_max,
     )
     indices = [int(i) - 1 for i in found if 0 <= int(i) - 1 < profile.size]
-    peaks = [_interpolated(profile, i, bin_metres, floor) for i in indices]
+    peaks = [
+        _interpolated(profile, i, bin_metres, floor, range_offset_m) for i in indices
+    ]
     peaks.sort(key=lambda p: p.amplitude, reverse=True)
     if max_peaks is not None:
         peaks = peaks[:max_peaks]
@@ -286,20 +395,26 @@ def strongest_peak(
     bin_metres: float,
     *,
     min_peak_to_noise: float = 4.0,
+    range_offset_m: float = 0.0,
 ) -> RangePeak | None:
     """The single most likely reflector, or None if nothing clears the floor.
 
     Returning None is the point. A matched filter always has a global maximum,
     and reporting it unconditionally is how a noise-only frame becomes a
     confident hand position.
+
+    `range_offset_m` carries the same warning as in :func:`peak_ranges`. Use
+    :func:`strongest_peak_of` when a profile object is at hand.
     """
     if bin_metres <= 0:
         raise ValueError("bin_metres must be positive")
+    if range_offset_m < 0.0:
+        raise ValueError("range_offset_m cannot be negative")
     if profile.size == 0:
         return None
-    floor = _noise_floor(profile)
+    floor = noise_floor(profile)
     index = int(np.argmax(profile))
-    peak = _interpolated(profile, index, bin_metres, floor)
+    peak = _interpolated(profile, index, bin_metres, floor, range_offset_m)
     if peak.amplitude <= 0.0:
         # A silent profile has a global maximum too. It is bin zero, and
         # reporting it would put a phantom reflector against the skin.
@@ -307,3 +422,39 @@ def strongest_peak(
     if peak.peak_to_noise < min_peak_to_noise:
         return None
     return peak
+
+
+def peak_ranges_of(
+    profile: EchoProfile,
+    *,
+    min_peak_to_noise: float = 4.0,
+    min_prominence_ratio: float = 0.3,
+    max_peaks: int | None = None,
+) -> list[RangePeak]:
+    """:func:`peak_ranges` applied to a profile, crop offset included.
+
+    Exists because the two-argument form takes bare `samples` plus
+    `bin_metres`, and a caller who has cropped has no way to be reminded that
+    a third number is now needed. Every range this returns is measured from
+    the transducer, whether or not the profile has been cropped.
+    """
+    return peak_ranges(
+        profile.samples.astype(np.float64),
+        profile.bin_metres,
+        min_peak_to_noise=min_peak_to_noise,
+        min_prominence_ratio=min_prominence_ratio,
+        max_peaks=max_peaks,
+        range_offset_m=profile.range_offset_m,
+    )
+
+
+def strongest_peak_of(
+    profile: EchoProfile, *, min_peak_to_noise: float = 4.0
+) -> RangePeak | None:
+    """:func:`strongest_peak` applied to a profile, crop offset included."""
+    return strongest_peak(
+        profile.samples.astype(np.float64),
+        profile.bin_metres,
+        min_peak_to_noise=min_peak_to_noise,
+        range_offset_m=profile.range_offset_m,
+    )

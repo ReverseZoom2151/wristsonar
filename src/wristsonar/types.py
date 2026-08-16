@@ -120,8 +120,10 @@ class EchoProfile:
     this value is the distance to the reflector rather than the distance the
     sound travelled. This has to be stated because both conventions are common
     and mixing them silently halves or doubles every range in the system.
-    `n_bins * bin_metres` therefore equals `ChirpConfig.max_unambiguous_range`,
-    which is also one-way.
+    For an uncropped profile of a full frame, `n_bins * bin_metres` therefore
+    equals `ChirpConfig.max_unambiguous_range`, which is also one-way. Once
+    cropped that identity no longer holds and `max_range` is the quantity to
+    read, since it adds the offset back.
     """
 
     timestamp_s: float

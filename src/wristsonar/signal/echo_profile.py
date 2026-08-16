@@ -193,13 +193,24 @@ def differential_profiles(
     The result is signed. Taking a magnitude here would be tempting and wrong:
     the sign distinguishes a reflector arriving in a bin from one leaving it,
     which is the only direction information the profile carries at all.
+
+    The crop offset is carried through, and inputs that disagree about it are
+    refused rather than quietly differenced. Bin k of two profiles cropped to
+    different near edges is two different distances, so subtracting them is
+    not a difference in time, and dropping the offset from the result would
+    put every range in the differenced sequence low by the near edge.
     """
     if len(profiles) < 2:
         return []
     bin_metres = profiles[0].bin_metres
     n_bins = profiles[0].n_bins
+    range_offset_m = profiles[0].range_offset_m
     for p in profiles:
-        if p.bin_metres != bin_metres or p.n_bins != n_bins:
+        if (
+            p.bin_metres != bin_metres
+            or p.n_bins != n_bins
+            or p.range_offset_m != range_offset_m
+        ):
             raise ValueError(
                 "cannot difference profiles with different range calibrations"
             )
@@ -214,6 +225,7 @@ def differential_profiles(
                 bin_metres=bin_metres,
                 timestamp_s=cur.timestamp_s,
                 differential=True,
+                range_offset_m=range_offset_m,
             )
         )
     return out

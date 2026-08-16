@@ -37,10 +37,13 @@ from wristsonar.signal.matched_filter import (
     correlate_fft,
     envelope,
     matched_filter,
+    noise_floor,
     parabolic_offset,
     peak_ranges,
+    peak_ranges_of,
     range_axis,
     strongest_peak,
+    strongest_peak_of,
 )
 from wristsonar.signal.simulate import (
     Reflector,
@@ -60,9 +63,11 @@ __all__ = [
     "envelope",
     "linear_chirp",
     "matched_filter",
+    "noise_floor",
     "normalise",
     "parabolic_offset",
     "peak_ranges",
+    "peak_ranges_of",
     "profile_from_frame",
     "profiles_from_recording",
     "range_axis",
@@ -71,5 +76,6 @@ __all__ = [
     "simulate_frame",
     "simulate_recording",
     "strongest_peak",
+    "strongest_peak_of",
     "windowed_chirp",
 ]

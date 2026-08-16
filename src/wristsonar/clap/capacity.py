@@ -272,9 +272,14 @@ class PoseGap:
     def achievable_resolution_deg(self) -> float:
         """Angular resolution the available bits could actually support.
 
-        Solving ``dof * log2(range / r) = available`` for ``r``. Expect a
-        number larger than the joint's range, meaning the event does not
-        distinguish one arm pose from any other.
+        Solving ``dof * log2(range / r) = available`` for ``r``. The number to
+        watch is this against ``range_deg``: at the 1.5 to 2 bits a clap
+        offers for hand configuration it comes out near 100 degrees against a
+        120 degree range, so the event splits each joint into roughly one and
+        a fifth distinguishable positions, which is not a pose. Even spending
+        the whole 5 to 10 bit impulse budget on the arm only reaches 45 to 73
+        degrees, coarser than the difference between an arm down and an arm
+        out.
         """
         return float(self.range_deg / (2.0 ** (self.available_bits / self.dof)))
 

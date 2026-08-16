@@ -29,6 +29,10 @@ from __future__ import annotations
 
 from wristsonar.clap.capacity import (
     ARM_DOF,
+    ARM_JOINT_RANGE_DEG,
+    HAND_BITS_RANGE,
+    IMPULSE_BITS_RANGE,
+    POSE_RESOLUTION_DEG,
     ChannelCapacity,
     OverclaimError,
     PoseGap,
@@ -69,10 +73,14 @@ from wristsonar.clap.resonance import (
 
 __all__ = [
     "ARM_DOF",
+    "ARM_JOINT_RANGE_DEG",
     "CONFUSABLE_PAIRS",
     "DEFAULT_TAXONOMY",
+    "HAND_BITS_RANGE",
+    "IMPULSE_BITS_RANGE",
     "MERGE_MAP",
     "MODE_PROTOTYPES",
+    "POSE_RESOLUTION_DEG",
     "ChannelCapacity",
     "ClapFeatures",
     "ClapMode",
