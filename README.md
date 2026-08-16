@@ -116,7 +116,27 @@ WatchHand confirms that it ships precomputed original and differential echo
 profiles, not raw audio, along with the chirp and synchronization parameters.
 The remaining risk is empirical: a target watch must still be shown to emit
 profiles compatible with the public archive. That cannot be proved until a Wear
-OS capture path and real hardware are available.
+OS capture path is built and real hardware is available.
+
+## Live host listener
+
+The Wear OS module in [`wear/`](wear/) emits raw signed-16-bit PCM to the host.
+The host aligns callbacks to the chirp itself, runs the same causal DSP used by
+the model input builder, and writes pose JSON Lines to standard output:
+
+```bash
+pip install -e ".[train]"
+wristsonar live listen \
+  --weights path/to/model.pt \
+  --bundle path/to/model.bundle.json \
+  --host 0.0.0.0 --port 8766 > poses.jsonl
+```
+
+The command accepts exactly one connection. It verifies the checkpoint digest
+and normalization bundle before listening. It produces no pose until the live
+stream has acquired a chirp lock, established a differential reference, and
+filled the causal 96-frame input window. There are no released weights yet, so
+this is an executable integration path rather than a claimed live result.
 
 ## Scope
 
@@ -141,6 +161,7 @@ can state its own limit rather than assert it.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Prior art](docs/PRIOR_ART.md), the published systems and what they released
 - [Data](docs/DATA.md)
+- [Wear OS sender](wear/README.md), including the hardware validation protocol
 - [Roadmap](docs/ROADMAP.md)
 
 ## Contributing
