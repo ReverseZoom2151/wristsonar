@@ -14,6 +14,14 @@ from wristsonar.model.normalization import (
 )
 from wristsonar.model.predictor import NormalizedPosePredictor, PredictorError
 from wristsonar.model.torch_model import ModelUnavailableError, create_pose_cnn
+from wristsonar.model.training import (
+    TrainedPoseModel,
+    TrainingConfig,
+    TrainingError,
+    TrainingHistory,
+    export_torch_checkpoint,
+    train_pose_cnn,
+)
 
 __all__ = [
     "CheckpointBundle",
@@ -25,6 +33,12 @@ __all__ = [
     "PoseNormalizer",
     "PoseWindows",
     "PredictorError",
+    "TrainedPoseModel",
+    "TrainingConfig",
+    "TrainingError",
+    "TrainingHistory",
     "WindowExample",
     "create_pose_cnn",
+    "export_torch_checkpoint",
+    "train_pose_cnn",
 ]
