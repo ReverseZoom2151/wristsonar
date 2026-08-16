@@ -85,7 +85,7 @@ class ChirpConfig:
 
     @property
     def max_unambiguous_range(self) -> float:
-        """Round-trip range that fits inside one frame, in metres."""
+        """Furthest one-way reflector distance that fits inside one frame."""
         return SPEED_OF_SOUND * self.duration_s / 2.0
 
     @property
@@ -110,7 +110,16 @@ class EchoProfile:
 
     samples: NDArray[np.float32]
     bin_metres: float
-    """Round-trip distance represented by one bin."""
+    """One-way reflector distance represented by one bin.
+
+    One-way, not round-trip. The factor of two is absorbed when the matched
+    filter converts correlation lag to range, so a bin index multiplied by
+    this value is the distance to the reflector rather than the distance the
+    sound travelled. This has to be stated because both conventions are common
+    and mixing them silently halves or doubles every range in the system.
+    `n_bins * bin_metres` therefore equals `ChirpConfig.max_unambiguous_range`,
+    which is also one-way.
+    """
 
     timestamp_s: float
     differential: bool = False

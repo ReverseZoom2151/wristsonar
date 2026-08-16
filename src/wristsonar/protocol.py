@@ -1,12 +1,15 @@
 """How a result was obtained, carried with the result itself.
 
 In acoustic hand-pose sensing the reported millimetre figures are not sensing
-resolution. Range resolution is c/2B, and with the roughly 4 kHz of usable
-inaudible bandwidth available on consumer hardware that is about 4.3 cm. The
-published millimetre numbers come from regressing a coarse echo signature onto
-the low-dimensional manifold that human hands actually occupy, because tendon
-coupling means twenty joints have far fewer than sixty effective degrees of
-freedom.
+resolution. Range resolution is c/2B. This project's default sweep is 18 to
+21 kHz, so B is 3 kHz and the resolution is about 5.7 cm. Widening to the full
+18 to 22 kHz that consumer hardware allows before the roll-off gets you to
+4.3 cm and no further. Either way the figure is wider than a hand.
+
+The published millimetre numbers therefore come from regressing a coarse echo
+signature onto the low-dimensional manifold that human hands actually occupy,
+because tendon coupling means the twenty-one landmarks tracked here have far
+fewer than sixty-three effective degrees of freedom.
 
 That single fact explains the field's behaviour: excellent within-user
 accuracy, two to three times degradation on unseen users, near-total immunity
