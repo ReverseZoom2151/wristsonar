@@ -11,6 +11,12 @@ from wristsonar.capture.synchronizer import (
     PcmSynchronizer,
     SynchronizationError,
 )
+from wristsonar.capture.wire import (
+    RawPcmWireFrame,
+    WireError,
+    decode_raw_pcm,
+    encode_raw_pcm,
+)
 
 __all__ = [
     "AlignedPcmFrame",
@@ -20,5 +26,9 @@ __all__ = [
     "EchoWindowAssembler",
     "PcmSynchronizer",
     "ProcessedFrame",
+    "RawPcmWireFrame",
     "SynchronizationError",
+    "WireError",
+    "decode_raw_pcm",
+    "encode_raw_pcm",
 ]
