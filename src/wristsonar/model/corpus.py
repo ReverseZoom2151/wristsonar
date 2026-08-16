@@ -15,14 +15,13 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from wristsonar.data.watchhand import (
-    MODEL_CROP_BINS,
-    MODEL_WINDOW_FRAMES,
-    SessionRef,
-    WatchHandDataset,
-)
+from wristsonar.data.watchhand import SessionRef, WatchHandDataset
 from wristsonar.eval.splits import Dataset, SampleMeta
 from wristsonar.model.dataset import PoseWindows, WindowExample
+from wristsonar.preprocess import (
+    WATCHHAND_PREPROCESSING,
+    PreprocessingDescriptor,
+)
 from wristsonar.types import N_JOINTS
 
 __all__ = ["SessionWindowSource", "TrainingCorpus"]
@@ -35,6 +34,16 @@ class TrainingCorpus:
     features: NDArray[np.float32]
     targets: NDArray[np.float32]
     meta: tuple[SampleMeta, ...]
+    descriptor: PreprocessingDescriptor | None = None
+    """The contract these windows were built under, when they came from one.
+
+    Carried so that a checkpoint exported from this corpus records the same
+    preprocessing the corpus was materialized with, rather than whatever the
+    exporter's caller happened to type. None is for hand-assembled arrays in
+    tests and baselines, which have no session behind them and therefore no
+    contract to inherit; shape checking against the descriptor is skipped for
+    those rather than being invented.
+    """
 
     def __post_init__(self) -> None:
         if self.features.ndim != 4 or self.features.shape[0] < 1:
@@ -53,9 +62,22 @@ class TrainingCorpus:
             raise ValueError("one SampleMeta is required for every training example")
         if not np.isfinite(self.features).all() or not np.isfinite(self.targets).all():
             raise ValueError("training corpus contains non-finite values")
+        if (
+            self.descriptor is not None
+            and tuple(self.features.shape[1:]) != self.descriptor.window_shape
+        ):
+            raise ValueError(
+                f"features are {tuple(self.features.shape[1:])} per example but "
+                f"the preprocessing contract says {self.descriptor.window_shape}"
+            )
 
     @classmethod
-    def from_examples(cls, examples: Iterable[WindowExample]) -> TrainingCorpus:
+    def from_examples(
+        cls,
+        examples: Iterable[WindowExample],
+        *,
+        descriptor: PreprocessingDescriptor | None = None,
+    ) -> TrainingCorpus:
         """Materialize a finite selection of examples without changing order."""
         items = tuple(examples)
         if not items:
@@ -66,6 +88,7 @@ class TrainingCorpus:
         return cls(
             features=np.stack([item.features for item in items]).astype(np.float32),
             targets=np.stack([item.target for item in items]).astype(np.float32),
+            descriptor=descriptor,
             meta=tuple(
                 SampleMeta(
                     participant=item.participant,
@@ -102,15 +125,14 @@ class SessionWindowSource:
 
     dataset: WatchHandDataset
     refs: tuple[SessionRef, ...]
-    width: int = MODEL_WINDOW_FRAMES
+    descriptor: PreprocessingDescriptor = WATCHHAND_PREPROCESSING
     stride: int = 1
-    crop_bins: int = MODEL_CROP_BINS
 
     def __post_init__(self) -> None:
         if not self.refs:
             raise ValueError("a window source needs at least one session")
-        if self.width < 1 or self.stride < 1 or self.crop_bins < 1:
-            raise ValueError("width, stride and crop_bins must be positive")
+        if self.stride < 1:
+            raise ValueError("stride must be positive")
         identities = [ref.identity for ref in self.refs]
         if len(set(identities)) != len(identities):
             raise ValueError("a window source cannot repeat one session")
@@ -120,16 +142,14 @@ class SessionWindowSource:
         cls,
         dataset: WatchHandDataset,
         *,
-        width: int = MODEL_WINDOW_FRAMES,
+        descriptor: PreprocessingDescriptor = WATCHHAND_PREPROCESSING,
         stride: int = 1,
-        crop_bins: int = MODEL_CROP_BINS,
     ) -> SessionWindowSource:
         return cls(
             dataset=dataset,
             refs=dataset.sessions(),
-            width=width,
+            descriptor=descriptor,
             stride=stride,
-            crop_bins=crop_bins,
         )
 
     @property
@@ -144,16 +164,26 @@ class SessionWindowSource:
         )
 
     def iter_examples(self) -> Iterator[WindowExample]:
-        """Load one verified session at a time, never the whole release."""
+        """Load one verified session at a time, never the whole release.
+
+        Every session is measured against the descriptor before any of its
+        windows are yielded. This is the path that needs it: the two
+        undocumented preprocessing parameters are recoverable from these
+        arrays and from nowhere else, and a corpus built under the wrong one
+        trains a model that a correct live pipeline can no longer feed. Doing
+        it per session rather than once for the dataset is deliberate, since
+        the offset is a property of a device and a recording rather than of
+        the release.
+        """
         for ref in self.refs:
             session = self.dataset.load(ref)
+            session.verify_preprocessing(self.descriptor)
             landmarks = self.dataset.landmarks(ref)
             yield from PoseWindows.from_session(
                 session,
                 landmarks,
-                width=self.width,
+                descriptor=self.descriptor,
                 stride=self.stride,
-                crop_bins=self.crop_bins,
             )
 
     def materialize(self, *, limit: int | None = None) -> TrainingCorpus:
@@ -170,4 +200,4 @@ class SessionWindowSource:
             selected.append(example)
             if limit is not None and len(selected) >= limit:
                 break
-        return TrainingCorpus.from_examples(selected)
+        return TrainingCorpus.from_examples(selected, descriptor=self.descriptor)

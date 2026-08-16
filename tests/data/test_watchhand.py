@@ -35,7 +35,12 @@ from wristsonar.data.watchhand import (
     WatchHandError,
     build_watchhand_manifest,
     estimate_bin_zero_offset,
+    estimate_differential_lag,
     watchhand_protocol,
+)
+from wristsonar.preprocess import (
+    WATCHHAND_PREPROCESSING,
+    PreprocessingMismatchError,
 )
 from wristsonar.protocol import GroundTruth, Split
 from wristsonar.types import N_JOINTS, SPEED_OF_SOUND, EchoProfile, HandPose
@@ -242,11 +247,47 @@ def test_windows_are_two_channel_model_inputs(watchhand_root: Path) -> None:
     dataset = _dataset(watchhand_root)
     session = dataset.load(dataset.sessions()[0])
     starts, arrays = zip(*session.windows(stride=16), strict=True)
+    lag = WATCHHAND_PREPROCESSING.differential_lag
 
     assert arrays[0].shape == (2, MODEL_CROP_BINS, MODEL_WINDOW_FRAMES)
     assert arrays[0].dtype == np.float32
-    assert starts[0] == 0 and starts[1] == 16
     assert float(np.max(np.abs(arrays[0]))) == pytest.approx(1.0)
+    # Windows start at the first original that has a differential aligned with
+    # it, not at column zero. The leading originals are skipped rather than
+    # paired with a differential describing a different pair of moments.
+    assert starts[0] == lag and starts[1] == lag + 16
+
+
+def test_windows_pair_each_original_with_its_measured_differential(
+    watchhand_root: Path,
+) -> None:
+    """The alignment defect, made arithmetic.
+
+    The fixture builds its differential the way the release does, so the
+    column that belongs with original i is i - lag and no other. Pairing by
+    raw index, which is what this used to do, puts a difference of frames
+    recorded after i inside a window that ends at i.
+    """
+    dataset = _dataset(watchhand_root)
+    session = dataset.load(dataset.sessions()[0])
+    descriptor = WATCHHAND_PREPROCESSING
+    start, window = next(iter(session.windows()))
+    stop = start + descriptor.window_frames
+
+    rows = descriptor.crop_slice
+    diff_start = descriptor.differential_column(start)
+    diff_stop = descriptor.differential_column(stop)
+    expected = np.stack(
+        (
+            np.asarray(session.profiles[rows, start:stop], dtype=np.float32),
+            np.asarray(
+                session.diff_profiles[rows, diff_start:diff_stop], dtype=np.float32
+            ),
+        )
+    )
+    np.testing.assert_allclose(
+        window, descriptor.normalise_window(expected), rtol=0, atol=0
+    )
 
 
 def test_windows_are_empty_when_the_session_is_too_short(
@@ -311,15 +352,51 @@ def test_wrongly_shaped_landmarks_are_refused(watchhand_root: Path) -> None:
         session.hand_poses(np.zeros((4, 20, 3), dtype=np.float32))
 
 
-def test_landmark_sidecar_is_read_when_present(watchhand_root: Path) -> None:
+def test_landmark_sidecar_is_read_when_present_and_pinned(
+    watchhand_root: Path,
+) -> None:
+    """Generate the sidecar, then rebuild the manifest, then read it.
+
+    That order is the whole fix. This test used to write the sidecar after the
+    manifest and assert the read succeeded, which locked in the exemption that
+    skipped verification for any landmark file the manifest did not mention.
+    Since landmarks are generated after a manifest is built, unpinned was the
+    normal case, so the exemption applied to essentially every sidecar in
+    existence.
+    """
+    ref = _dataset(watchhand_root).sessions()[0]
+    np.save(
+        watchhand_root / ref.landmarks_path,
+        np.zeros((3, N_JOINTS, 3), dtype=np.float32),
+    )
+    dataset = _dataset(watchhand_root)
+
+    loaded = dataset.landmarks(ref)
+    assert loaded is not None and loaded.shape == (3, N_JOINTS, 3)
+
+
+def test_unpinned_landmark_sidecar_is_refused(watchhand_root: Path) -> None:
+    """The ground truth every reported number is measured against is verified."""
     dataset = _dataset(watchhand_root)
     ref = dataset.sessions()[0]
     np.save(
         watchhand_root / ref.landmarks_path,
         np.zeros((3, N_JOINTS, 3), dtype=np.float32),
     )
-    loaded = dataset.landmarks(ref)
-    assert loaded is not None and loaded.shape == (3, N_JOINTS, 3)
+
+    with pytest.raises(IntegrityError, match="not in manifest"):
+        dataset.landmarks(ref)
+
+
+def test_tampered_landmark_sidecar_is_refused(watchhand_root: Path) -> None:
+    ref = _dataset(watchhand_root).sessions()[0]
+    path = watchhand_root / ref.landmarks_path
+    np.save(path, np.zeros((3, N_JOINTS, 3), dtype=np.float32))
+    dataset = _dataset(watchhand_root)
+    np.save(path, np.ones((3, N_JOINTS, 3), dtype=np.float32))
+
+    with pytest.raises(IntegrityError, match="contents have changed"):
+        dataset.landmarks(ref)
 
 
 # --------------------------------------------------------------------------
@@ -422,6 +499,65 @@ def test_bin_zero_offset_on_real_shaped_fixture(watchhand_root: Path) -> None:
 def test_bin_zero_offset_rejects_a_single_frame() -> None:
     with pytest.raises(ValueError, match="bins, frames"):
         estimate_bin_zero_offset(np.zeros(600, dtype=np.float32))
+
+
+def test_differential_lag_is_measured_from_the_arrays_not_assumed() -> None:
+    """Build a differential at a known lag, recover the lag without being told."""
+    rng = np.random.default_rng(11)
+    profiles = np.abs(rng.normal(0.0, 1.0, size=(64, 120))).astype(np.float32)
+    for lag in (1, 2, 3):
+        shipped = np.diff(profiles, axis=1)[:, lag - 1 :].astype(np.float32)
+        assert estimate_differential_lag(profiles, shipped) == lag
+
+
+def test_differential_lag_reports_that_it_cannot_be_measured(
+    watchhand_root: Path,
+) -> None:
+    """A differential that is not a difference of these originals measures nothing.
+
+    The released arrays may well be this case, which is why the estimator
+    returns None rather than the best-scoring alignment: a caller that treats
+    "closest" as "correct" is back to assuming.
+    """
+    dataset = _dataset(watchhand_root)
+    session = dataset.load(dataset.sessions()[0])
+    unrelated = np.zeros_like(np.asarray(session.diff_profiles))
+    assert estimate_differential_lag(np.asarray(session.profiles), unrelated) is None
+
+
+def test_the_fixture_ships_the_lag_the_descriptor_declares(
+    watchhand_root: Path,
+) -> None:
+    dataset = _dataset(watchhand_root)
+    session = dataset.load(dataset.sessions()[0])
+    measured = estimate_differential_lag(
+        np.asarray(session.profiles), np.asarray(session.diff_profiles)
+    )
+    assert measured == WATCHHAND_PREPROCESSING.differential_lag
+
+
+def test_verify_preprocessing_names_the_measured_bin_zero_offset(
+    watchhand_root: Path,
+) -> None:
+    """The fixture plants the direct path at bin 3, the default descriptor says 0."""
+    dataset = _dataset(watchhand_root)
+    session = dataset.load(dataset.sessions()[0])
+
+    with pytest.raises(PreprocessingMismatchError, match=r"with_bin_zero_offset\(3\)"):
+        session.verify_preprocessing(WATCHHAND_PREPROCESSING)
+
+    session.verify_preprocessing(WATCHHAND_PREPROCESSING.with_bin_zero_offset(3))
+
+
+def test_verify_preprocessing_names_the_measured_differential_lag(
+    watchhand_root: Path,
+) -> None:
+    dataset = _dataset(watchhand_root)
+    session = dataset.load(dataset.sessions()[0])
+    wrong = WATCHHAND_PREPROCESSING.with_bin_zero_offset(3).with_differential_lag(1)
+
+    with pytest.raises(PreprocessingMismatchError, match=r"with_differential_lag\(2\)"):
+        session.verify_preprocessing(wrong)
 
 
 # --------------------------------------------------------------------------

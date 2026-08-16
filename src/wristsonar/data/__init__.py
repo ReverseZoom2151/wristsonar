@@ -37,6 +37,7 @@ from wristsonar.data.watchhand import (
     WatchHandError,
     build_watchhand_manifest,
     estimate_bin_zero_offset,
+    estimate_differential_lag,
     watchhand_protocol,
 )
 
@@ -67,6 +68,7 @@ __all__ = [
     "build_manifest",
     "build_watchhand_manifest",
     "estimate_bin_zero_offset",
+    "estimate_differential_lag",
     "sha256_file",
     "watchhand_protocol",
 ]

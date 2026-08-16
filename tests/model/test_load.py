@@ -13,6 +13,10 @@ from wristsonar.model.load import (
 )
 from wristsonar.model.normalization import FeatureNormalizer, PoseNormalizer
 from wristsonar.model.torch_model import ModelUnavailableError
+from wristsonar.preprocess import (
+    WATCHHAND_PREPROCESSING,
+    PreprocessingMismatchError,
+)
 from wristsonar.protocol import GroundTruth, Split
 
 
@@ -37,8 +41,6 @@ def test_loader_verifies_bundle_before_reporting_missing_optional_torch(
         split=Split.CROSS_USER,
         ground_truth=GroundTruth.VIDEO_FITTED,
         calibration_minutes=0,
-        crop_bins=60,
-        window_frames=96,
         sha256_data_manifest="a" * 64,
     )
     bundle = CheckpointBundle.for_weights(
@@ -58,3 +60,44 @@ def test_loader_verifies_bundle_before_reporting_missing_optional_torch(
     weights.write_bytes(b"changed")
     with pytest.raises(ValueError, match="digest mismatch"):
         load_torch_checkpoint(weights, bundle_path)
+
+
+def test_loader_refuses_a_checkpoint_trained_under_other_preprocessing(
+    tmp_path: Path,
+    without_torch: None,
+) -> None:
+    """The check that makes a checkpoint's preprocessing record worth storing.
+
+    A pipeline cropping from a different bin zero feeds the model ranges
+    shifted by a constant, which it reads as a differently sized hand. Nothing
+    downstream can notice: the tensor is the right shape and the pose JSON is
+    well formed. So it is refused here, before Torch is even asked for.
+    """
+    weights = tmp_path / "model.pt"
+    weights.write_bytes(b"not-a-torch-file-but-hashed")
+    trained_under = WATCHHAND_PREPROCESSING.with_bin_zero_offset(5)
+    bundle = CheckpointBundle.for_weights(
+        weights,
+        metadata=CheckpointMetadata(
+            model="pose-cnn/1,width=32",
+            dataset="watchhand",
+            dataset_version="v1",
+            split=Split.CROSS_USER,
+            ground_truth=GroundTruth.VIDEO_FITTED,
+            calibration_minutes=0,
+            sha256_data_manifest="a" * 64,
+            preprocessing=trained_under,
+        ),
+        feature_normalizer=FeatureNormalizer.fit(
+            np.ones((1, 2, 60, 96), dtype=np.float32)
+        ),
+        pose_normalizer=PoseNormalizer.fit(np.zeros((1, 21, 3), dtype=np.float32)),
+    )
+    bundle_path = tmp_path / "model.bundle.json"
+    bundle.write(bundle_path)
+
+    with pytest.raises(PreprocessingMismatchError, match="bin_zero_offset"):
+        load_torch_checkpoint(weights, bundle_path)
+
+    with pytest.raises(ModelUnavailableError, match=r"\[train\]"):
+        load_torch_checkpoint(weights, bundle_path, preprocessing=trained_under)

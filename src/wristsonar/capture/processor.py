@@ -1,4 +1,11 @@
-"""Convert aligned microphone frames into causal model-ready echo windows."""
+"""Convert aligned microphone frames into causal model-ready echo windows.
+
+Every convention this module used to hold privately now arrives in a
+`PreprocessingDescriptor`, the same object the training corpus builder reads
+and the same object a checkpoint records. Nothing here decides how a window is
+built; it decides only how to get from a microphone to the tensor that
+contract describes.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +16,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from wristsonar.capture.health import CaptureHealth, DuplexValidator
-from wristsonar.data.watchhand import (
-    MODEL_CROP_BINS,
-    MODEL_WINDOW_FRAMES,
-    WATCHHAND_CHIRP,
+from wristsonar.preprocess import (
+    WATCHHAND_PREPROCESSING,
+    PreprocessingDescriptor,
 )
 from wristsonar.runtime.frames import CaptureFrame
 from wristsonar.signal.chirp import analytic_reference
@@ -28,7 +34,16 @@ class CaptureProcessingError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ProcessedFrame:
-    """One original and differential profile ending at the same timestamp."""
+    """One original and differential profile ending at the same timestamp.
+
+    Ending at, which is the whole causal contract in three words. The
+    differential is the difference between this frame and the one before it,
+    so it is complete at this frame's timestamp and never later. The equality
+    is checked rather than assumed because the failure it guards against, a
+    differential that reaches one frame into the future, is invisible in the
+    output and inflates offline accuracy by exactly the amount that cannot be
+    reproduced online.
+    """
 
     original: EchoProfile
     differential: EchoProfile
@@ -46,20 +61,19 @@ class EchoWindowAssembler:
     def __init__(
         self,
         *,
-        crop_bins: int = MODEL_CROP_BINS,
-        window_frames: int = MODEL_WINDOW_FRAMES,
+        descriptor: PreprocessingDescriptor = WATCHHAND_PREPROCESSING,
     ) -> None:
-        if not 1 <= crop_bins <= WATCHHAND_CHIRP.n_samples:
-            raise ValueError("crop_bins must lie inside one matched-filter frame")
-        if window_frames < 1:
-            raise ValueError("window_frames must be positive")
-        self._crop_bins = crop_bins
-        self._window_frames = window_frames
-        self._reference = analytic_reference(WATCHHAND_CHIRP)
+        self._descriptor = descriptor
+        self._reference = analytic_reference(descriptor.chirp)
         self._validator = DuplexValidator()
         self._previous: EchoProfile | None = None
-        self._frames: deque[ProcessedFrame] = deque(maxlen=window_frames)
+        self._frames: deque[ProcessedFrame] = deque(maxlen=descriptor.window_frames)
         self._last_timestamp: float | None = None
+
+    @property
+    def descriptor(self) -> PreprocessingDescriptor:
+        """The contract this assembler builds to, for a loader to check."""
+        return self._descriptor
 
     @property
     def health(self) -> CaptureHealth:
@@ -79,14 +93,15 @@ class EchoWindowAssembler:
         A discontinuity clears differencing and temporal history. Otherwise the
         first post-restart frame would fabricate a large motion event.
         """
+        chirp = self._descriptor.chirp
         if not np.isfinite(timestamp_s):
             raise CaptureProcessingError("timestamp must be finite")
         values = np.asarray(pcm)
         if values.ndim != 1:
             raise CaptureProcessingError("a microphone frame must be one dimensional")
-        if values.size != WATCHHAND_CHIRP.n_samples:
+        if values.size != chirp.n_samples:
             raise CaptureProcessingError(
-                f"expected {WATCHHAND_CHIRP.n_samples} samples, got {values.size}"
+                f"expected {chirp.n_samples} samples, got {values.size}"
             )
         if not np.issubdtype(values.dtype, np.number):
             raise CaptureProcessingError("PCM frame must be numeric")
@@ -121,26 +136,31 @@ class EchoWindowAssembler:
             self._reference,
             sample_rate,
             timestamp_s,
-            n_bins=WATCHHAND_CHIRP.n_samples,
+            n_bins=chirp.n_samples,
         )
         if self._previous is None:
             self._previous = original
             return None
+        # The immediate difference, attributed to the later frame of its pair,
+        # which is `DifferentialPhase.LATER` and is the only convention the
+        # descriptor permits. There is no lag to apply here: the descriptor's
+        # differential lag says where that same quantity sits inside the array
+        # WatchHand shipped, and this path has no such array.
         differential = differential_profiles((self._previous, original))[0]
         self._previous = original
         self._frames.append(ProcessedFrame(original, differential))
-        if len(self._frames) < self._window_frames:
+        if len(self._frames) < self._descriptor.window_frames:
             return None
+        crop = self._descriptor.crop_rows
         original_stack = np.stack(
-            [item.original.samples[: self._crop_bins] for item in self._frames]
+            [crop(item.original.samples) for item in self._frames]
         )
         differential_stack = np.stack(
-            [item.differential.samples[: self._crop_bins] for item in self._frames]
+            [crop(item.differential.samples) for item in self._frames]
         )
+        stacked = np.stack((original_stack.T, differential_stack.T)).astype(np.float32)
         return CaptureFrame(
-            samples=np.stack((original_stack.T, differential_stack.T)).astype(
-                np.float32
-            ),
+            samples=self._descriptor.normalise_window(stacked),
             timestamp_s=timestamp_s,
             sample_rate=sample_rate,
         )

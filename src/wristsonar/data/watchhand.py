@@ -16,7 +16,7 @@ difference of correlation magnitude. `wristsonar.dsp` is expected to
 implement exactly that, and the constants it must match live here rather than
 being retyped at each call site.
 
-Two things remain outside our control and are named as such rather than
+Three things remain outside our control and are named as such rather than
 papered over:
 
 * The absolute amplitude scale of the shipped profiles depends on how the
@@ -27,6 +27,18 @@ papered over:
   recoverable from the data, because the direct speaker-to-microphone path is
   a large static peak at essentially zero range, so `estimate_bin_zero_offset`
   measures it instead of assuming it.
+* How the shipped differential array lines up with the original array beside
+  it is not documented and cannot be inferred from the shapes alone, since the
+  differential is two frames shorter rather than the one a plain difference
+  would lose. `estimate_differential_lag` measures it where both arrays are
+  present, and `PreprocessingDescriptor.differential_lag` states the
+  conservative fallback and why.
+
+None of those three is allowed to live only here any more. They belong to
+`wristsonar.preprocess.PreprocessingDescriptor`, which the live capture path
+reads from the same object, so that the training window and the microphone
+window are built by one contract rather than by two sets of defaults that
+happen to have been written on the same afternoon.
 
 The other surprise worth reading before building on this: the pose ground
 truth is not in the release. Sessions carry the study video, per-frame video
@@ -51,11 +63,16 @@ import numpy as np
 from numpy.typing import NDArray
 
 from wristsonar.data.manifest import IntegrityError, LazyVerifier, Manifest
+from wristsonar.preprocess import (
+    WATCHHAND_CHIRP,
+    WATCHHAND_PREPROCESSING,
+    PreprocessingDescriptor,
+    PreprocessingMismatchError,
+)
 from wristsonar.protocol import GroundTruth, Protocol, Split
 from wristsonar.types import (
     N_JOINTS,
     SPEED_OF_SOUND,
-    ChirpConfig,
     EchoProfile,
     HandPose,
 )
@@ -79,24 +96,11 @@ __all__ = [
     "WatchHandDataset",
     "WatchHandError",
     "estimate_bin_zero_offset",
+    "estimate_differential_lag",
     "watchhand_protocol",
 ]
 
 DATASET_NAME: Final = "watchhand"
-
-WATCHHAND_CHIRP: Final = ChirpConfig(
-    f_start=18_000.0,
-    f_end=21_000.0,
-    duration_s=600 / 48_000,
-    sample_rate=48_000,
-)
-"""The sweep the watches actually transmitted.
-
-Read off the transmit waveform filename in every config.json,
-`fmcw18000_b3000_l600_s48k.wav`: start 18000 Hz, bandwidth 3000 Hz, length
-600 samples, 48 kHz. A live capture app that emits anything else is not
-producing this dataset's input, however similar the numbers look.
-"""
 
 N_RANGE_BINS: Final = 600
 """Rows in a shipped profile. One bin per sample of the correlation lag."""
@@ -111,13 +115,17 @@ calibration constant beyond the speed of sound.
 BUTTERWORTH_ORDER: Final = 5
 """Order of the bandpass applied before correlation, from the paper."""
 
-MODEL_CROP_BINS: Final = 60
+MODEL_CROP_BINS: Final = WATCHHAND_PREPROCESSING.crop_bins
 """Bins the paper keeps, about 21.4 cm, covering wrist to middle fingertip.
 
 Everything past this is room. See `EchoProfile.crop` for why that matters.
+
+Read off the shared descriptor rather than retyped, so that a change to the
+contract cannot leave this constant, and everything that still imports it,
+describing the previous one.
 """
 
-MODEL_WINDOW_FRAMES: Final = 96
+MODEL_WINDOW_FRAMES: Final = WATCHHAND_PREPROCESSING.window_frames
 """Frames per model input, 1.2 s at 80 frames per second."""
 
 WATCHHAND_GROUND_TRUTH: Final = GroundTruth.VIDEO_FITTED
@@ -426,32 +434,98 @@ class SessionData:
     def windows(
         self,
         *,
-        width: int = MODEL_WINDOW_FRAMES,
+        descriptor: PreprocessingDescriptor = WATCHHAND_PREPROCESSING,
         stride: int = 1,
-        crop_bins: int = MODEL_CROP_BINS,
-        normalise: bool = True,
     ) -> Iterator[tuple[int, NDArray[np.float32]]]:
-        """Two-channel model inputs, shape (2, crop_bins, width).
+        """Two-channel model inputs, shape (2, crop_bins, window_frames).
+
+        Every choice this method used to make for itself now comes from
+        `descriptor`, which is the same object the live assembler reads and the
+        same object the checkpoint records. That is the entire point: a window
+        built here and a window built from a microphone are the same tensor,
+        and `tests/test_preprocessing_contract.py` asserts it rather than
+        trusting it.
 
         Channel order is original then differential, matching the paper. The
-        two arrays are trimmed to their common length first, because the
-        differential is shorter and pairing them by raw index would drift.
+        two channels are aligned by `descriptor.differential_lag` rather than
+        by raw index. Pairing by raw index was the defect: the shipped
+        differential is shorter, so index i of one array and index i of the
+        other describe different moments, and under the plausible alignment it
+        put a frame recorded after the predicted pose inside a window that
+        `model/dataset.py` documents as causal.
+
+        The yielded integer is the index of the window's first original
+        column, so the last frame of a window is `start + window_frames - 1`.
+        Windows therefore begin at `differential_lag` rather than at zero: the
+        leading originals have no differential aligned with them and are
+        skipped rather than paired with something else.
         """
-        if width < 1 or stride < 1:
-            raise ValueError("width and stride must be positive")
-        if not 0 < crop_bins <= N_RANGE_BINS:
-            raise ValueError(f"crop_bins must be in 1..{N_RANGE_BINS}")
-        common = min(int(self.profiles.shape[1]), int(self.diff_profiles.shape[1]))
-        if common < width:
+        if stride < 1:
+            raise ValueError("stride must be positive")
+        width = descriptor.window_frames
+        lag = descriptor.differential_lag
+        n_original = int(self.profiles.shape[1])
+        n_diff = int(self.diff_profiles.shape[1])
+        if descriptor.bin_zero_offset + descriptor.crop_bins > int(
+            self.profiles.shape[0]
+        ):
+            raise ValueError(
+                f"{self.ref.identity} has {self.profiles.shape[0]} bins, too few "
+                f"for a {descriptor.crop_bins} bin crop from bin "
+                f"{descriptor.bin_zero_offset}"
+            )
+        stop_column = min(n_original, n_diff + lag)
+        usable = stop_column - lag
+        if usable < width:
             return
-        original = np.asarray(self.profiles[:crop_bins, :common], dtype=np.float32)
-        diff = np.asarray(self.diff_profiles[:crop_bins, :common], dtype=np.float32)
-        for start in range(0, common - width + 1, stride):
+        rows = descriptor.crop_slice
+        original = np.asarray(self.profiles[rows, lag:stop_column], dtype=np.float32)
+        diff = np.asarray(
+            self.diff_profiles[rows, 0 : stop_column - lag], dtype=np.float32
+        )
+        for start in range(0, usable - width + 1, stride):
             stop = start + width
             stacked = np.stack((original[:, start:stop], diff[:, start:stop]))
-            if normalise:
-                stacked = _peak_normalise(stacked)
-            yield start, np.ascontiguousarray(stacked, dtype=np.float32)
+            yield lag + start, descriptor.normalise_window(stacked)
+
+    def verify_preprocessing(
+        self, descriptor: PreprocessingDescriptor = WATCHHAND_PREPROCESSING
+    ) -> None:
+        """Measure what the descriptor asserts, and refuse when they differ.
+
+        The two undocumented parameters are the ones that produce a plausible
+        wrong answer rather than a crash, so they are measured against this
+        session's own arrays before that session becomes training data. A
+        mismatch names the measured value, because the only useful response to
+        it is to rebuild the descriptor with what the data actually says.
+
+        A lag that cannot be measured is not treated as agreement and is not
+        treated as failure either. `estimate_differential_lag` returns None
+        when the shipped differential is not reproducible from the shipped
+        original, which happens for real reasons: the differential may have
+        been computed before a filtering step this loader never sees. The
+        declared value then stands, which is safe only because the declared
+        value is the conservative one.
+        """
+        measured_offset = estimate_bin_zero_offset(np.asarray(self.profiles))
+        if measured_offset != descriptor.bin_zero_offset:
+            raise PreprocessingMismatchError(
+                f"{self.ref.identity} puts the static direct path at bin "
+                f"{measured_offset}, but the preprocessing descriptor crops "
+                f"from bin {descriptor.bin_zero_offset}. A constant range "
+                "offset reads to a model as a differently sized hand. Rebuild "
+                f"the descriptor with .with_bin_zero_offset({measured_offset})"
+            )
+        measured_lag = estimate_differential_lag(
+            np.asarray(self.profiles), np.asarray(self.diff_profiles)
+        )
+        if measured_lag is not None and measured_lag != descriptor.differential_lag:
+            raise PreprocessingMismatchError(
+                f"{self.ref.identity} ships a differential aligned at lag "
+                f"{measured_lag}, but the preprocessing descriptor declares "
+                f"{descriptor.differential_lag}. Rebuild the descriptor with "
+                f".with_differential_lag({measured_lag})"
+            )
 
     def gesture_at(self, timestamp_s: float) -> GestureLabel | None:
         for label in self.gestures:
@@ -593,12 +667,25 @@ class WatchHandDataset:
         )
 
     def landmarks(self, ref: SessionRef) -> NDArray[np.float32] | None:
-        """Generated pose sidecar for a session, or None if you have not made one."""
+        """Generated pose sidecar for a session, or None if you have not made one.
+
+        A sidecar that exists is verified, with no exemption for one that the
+        manifest does not mention. The exemption used to exist and was the
+        loophole that mattered: landmarks are generated after the manifest is
+        built, so being unpinned is the normal state rather than the unusual
+        one, and every file that most needed checking took the branch that
+        skipped it. Landmarks are the ground truth every reported number is
+        measured against, so an unpinned one is not a lesser problem than an
+        unpinned profile, it is a worse one.
+
+        Absent is still absent: None, and `hand_poses` raises a specific error
+        from there. Present but unaccounted for is refused, and the fix is to
+        rebuild the manifest now that the sidecars exist.
+        """
         path = self._root / PurePosixPath(ref.landmarks_path)
         if not path.is_file():
             return None
-        if ref.landmarks_path in self.manifest:
-            self._verifier.check(ref.landmarks_path)
+        self._verifier.check(ref.landmarks_path)
         return np.asarray(np.load(path), dtype=np.float32)
 
     def _study_dir(self, study: Study) -> Path | None:
@@ -721,6 +808,68 @@ def estimate_bin_zero_offset(
         raise ValueError("search_bins must select at least one bin")
     static = np.median(np.abs(np.asarray(profiles[:limit], dtype=np.float64)), axis=1)
     return int(np.argmax(static))
+
+
+def estimate_differential_lag(
+    profiles: NDArray[np.float32],
+    diff_profiles: NDArray[np.float32],
+    *,
+    max_lag: int = 4,
+    max_columns: int = 256,
+    tolerance: float = 1e-3,
+) -> int | None:
+    """Which original column a shipped differential column belongs to.
+
+    Same empirical approach as `estimate_bin_zero_offset`, for the same
+    reason: the alternative is an assumption that produces plausible wrong
+    answers. A differential column is a difference of two adjacent originals,
+    so it can be reconstructed from the originals at every candidate
+    alignment, and only the true alignment reproduces it. Returns the lag L
+    for which `diff[:, j] == profiles[:, j + L] - profiles[:, j + L - 1]`,
+    that is, the original column each differential column is attributed to
+    under the causal convention.
+
+    Returns None rather than a guess when the answer is not measurable, and
+    that is the expected outcome on the released arrays. The shipped
+    differential is two frames shorter than the original, not the one a plain
+    frame-to-frame difference loses, so something was trimmed or filtered that
+    this loader never sees, and a reconstruction from the shipped originals
+    need not match at any alignment. A caller that gets None must fall back to
+    a stated conservative choice rather than to whichever alignment scored
+    best; see `PreprocessingDescriptor.differential_lag`, which never lets a
+    frame recorded after the predicted pose into a causal window.
+
+    `tolerance` is a relative residual, and `max_columns` bounds the work: a
+    few hundred columns settle this, and a released session has 27,198.
+    """
+    if profiles.ndim != 2 or diff_profiles.ndim != 2:
+        raise ValueError("expected two (bins, frames) arrays")
+    if profiles.shape[0] != diff_profiles.shape[0]:
+        raise ValueError("original and differential must have the same bin count")
+    if max_lag < 1 or max_columns < 1 or tolerance <= 0.0:
+        raise ValueError("max_lag, max_columns and tolerance must be positive")
+
+    n_diff = int(diff_profiles.shape[1])
+    n_original = int(profiles.shape[1])
+    matches: list[int] = []
+    for lag in range(1, max_lag + 1):
+        usable = min(n_diff, n_original - lag, max_columns)
+        if usable < 1:
+            continue
+        observed = np.asarray(diff_profiles[:, :usable], dtype=np.float64)
+        later = np.asarray(profiles[:, lag : lag + usable], dtype=np.float64)
+        earlier = np.asarray(profiles[:, lag - 1 : lag - 1 + usable], dtype=np.float64)
+        expected = later - earlier
+        scale = float(np.linalg.norm(observed))
+        if scale <= 0.0:
+            # An all-zero differential is consistent with every alignment, so
+            # it measures nothing rather than confirming the first candidate.
+            return None
+        if float(np.linalg.norm(observed - expected)) / scale <= tolerance:
+            matches.append(lag)
+    if len(matches) != 1:
+        return None
+    return matches[0]
 
 
 class _BareDataset:

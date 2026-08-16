@@ -49,12 +49,17 @@ class SessionSpec:
 def _profile(n_bins: int, n_frames: int, seed: int) -> NDArray[np.float32]:
     """A profile with a strong static near-field peak and a moving reflector.
 
-    Shaped rather than pure noise because two tests depend on structure:
-    bin-zero estimation needs a dominant static peak, and normalisation needs
-    a peak that is not one already.
+    Shaped rather than pure noise because three tests depend on structure:
+    bin-zero estimation needs a dominant static peak, normalisation needs a
+    peak that is not one already, and differential-lag estimation needs frames
+    that differ from one another.
+
+    Non-negative, because a shipped profile is a correlation magnitude. A
+    fixture carrying signed values would let a sign convention error pass here
+    and fail on the release.
     """
     rng = np.random.default_rng(seed)
-    array = rng.normal(0.0, 0.05, size=(n_bins, n_frames))
+    array = np.abs(rng.normal(0.0, 0.05, size=(n_bins, n_frames)))
     array[3, :] += 40.0
     moving = 12 + (6 * np.sin(np.linspace(0.0, 6.0, n_frames))).astype(int)
     array[moving, np.arange(n_frames)] += 8.0
@@ -92,10 +97,16 @@ def write_session_dir(directory: Path, specs: list[SessionSpec]) -> None:
     for index, spec in enumerate(specs):
         original = _profile(N_RANGE_BINS, spec.n_frames, seed=index)
         np.save(directory / f"{spec.stem}_fmcw_16bit_profiles.npy", original)
-        # The real release ships a differential that is shorter than the
-        # original, so the fixture is too. Code that assumes equal widths
-        # should fail here rather than on the real data.
-        diff = np.diff(np.abs(original), axis=1).astype(np.float32)
+        # The real release ships a differential two frames shorter than the
+        # original, not the one frame a plain difference loses, so the fixture
+        # is too: a frame-to-frame difference with one further column trimmed
+        # off the front. That makes differential column j the pair
+        # (j + 1, j + 2), attributed under the causal convention to original
+        # column j + 2, which is a lag of 2 and is what
+        # `estimate_differential_lag` must recover. Code that assumes equal
+        # widths, or that pairs the two arrays by raw index, should fail here
+        # rather than on the real data.
+        diff = np.diff(original, axis=1)[:, 1:].astype(np.float32)
         np.save(directory / f"{spec.stem}_fmcw_16bit_diff_profiles.npy", diff)
 
         start = _BASE_TIMESTAMP + index * 300.0

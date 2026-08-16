@@ -6,6 +6,9 @@ import numpy as np
 
 from wristsonar.data.watchhand import SessionData, SessionRef, Study
 from wristsonar.model.dataset import PoseWindows
+from wristsonar.preprocess import WATCHHAND_PREPROCESSING
+
+_SIXTEEN_FRAME_WINDOW = WATCHHAND_PREPROCESSING.with_window_frames(16)
 
 
 def test_pose_windows_are_causal_and_use_the_aligned_previous_label() -> None:
@@ -27,10 +30,14 @@ def test_pose_windows_are_causal_and_use_the_aligned_previous_label() -> None:
     labels[1, 1, 0] = 1.0
     labels[2, 1, 0] = 2.0
 
-    examples = list(PoseWindows.from_session(session, labels, width=16, stride=32))
+    examples = list(
+        PoseWindows.from_session(
+            session, labels, descriptor=_SIXTEEN_FRAME_WINDOW, stride=32
+        )
+    )
 
     assert examples
-    assert examples[0].features.shape == (2, 60, 16)
+    assert examples[0].features.shape == _SIXTEEN_FRAME_WINDOW.window_shape
     assert examples[0].target.shape == (21, 3)
     assert examples[0].participant == "study1/sub1"
     assert examples[0].device == "unknown-device"

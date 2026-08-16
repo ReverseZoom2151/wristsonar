@@ -8,10 +8,10 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from wristsonar.data.watchhand import (
-    MODEL_CROP_BINS,
-    MODEL_WINDOW_FRAMES,
-    SessionData,
+from wristsonar.data.watchhand import SessionData
+from wristsonar.preprocess import (
+    WATCHHAND_PREPROCESSING,
+    PreprocessingDescriptor,
 )
 from wristsonar.types import N_JOINTS
 
@@ -54,9 +54,8 @@ class PoseWindows:
         session: SessionData,
         landmarks: NDArray[np.float32] | None,
         *,
-        width: int = MODEL_WINDOW_FRAMES,
+        descriptor: PreprocessingDescriptor = WATCHHAND_PREPROCESSING,
         stride: int = 1,
-        crop_bins: int = MODEL_CROP_BINS,
     ) -> Iterator[WindowExample]:
         """Yield examples without silently interpolating video labels.
 
@@ -65,6 +64,11 @@ class PoseWindows:
         window chooses the most recent video landmark rather than inventing a
         sub-frame pose.  Consumers that want interpolation must state and test
         that separate labelling method.
+
+        The window geometry is not this function's to choose.  It comes from
+        `descriptor`, so that the causal contract in `WindowExample` is a
+        property of the shared preprocessing rather than of this file's
+        defaults.
         """
         poses = session.hand_poses(landmarks)
         if not poses:
@@ -81,10 +85,8 @@ class PoseWindows:
             )
         targets = np.stack([p.joints for p in poses]).astype(np.float32)
 
-        for start, features in session.windows(
-            width=width, stride=stride, crop_bins=crop_bins
-        ):
-            frame = start + width - 1
+        for start, features in session.windows(descriptor=descriptor, stride=stride):
+            frame = start + descriptor.window_frames - 1
             at = profile_times[frame]
             label = int(np.searchsorted(target_times, at, side="right") - 1)
             if label < 0:

@@ -10,6 +10,10 @@ import numpy as np
 from wristsonar.model.checkpoint import CheckpointBundle
 from wristsonar.model.predictor import NormalizedPosePredictor
 from wristsonar.model.torch_model import ModelUnavailableError, load_pose_cnn
+from wristsonar.preprocess import (
+    WATCHHAND_PREPROCESSING,
+    PreprocessingDescriptor,
+)
 
 __all__ = [
     "CheckpointLoadError",
@@ -52,9 +56,27 @@ class LoadedPoseCheckpoint:
     def model_id(self) -> str:
         return self.bundle.metadata.model
 
+    @property
+    def preprocessing(self) -> PreprocessingDescriptor:
+        """The contract the caller's capture path was checked against."""
+        return self.bundle.preprocessing
 
-def load_torch_checkpoint(weights: Path, bundle_path: Path) -> LoadedPoseCheckpoint:
+
+def load_torch_checkpoint(
+    weights: Path,
+    bundle_path: Path,
+    *,
+    preprocessing: PreprocessingDescriptor = WATCHHAND_PREPROCESSING,
+) -> LoadedPoseCheckpoint:
     """Verify, load and adapt a Torch checkpoint for `RealtimeInference`.
+
+    `preprocessing` is the contract of the pipeline that is about to feed
+    these weights, and loading refuses when it differs from the one the
+    checkpoint was trained under. The default is the project's own contract,
+    which is what `LiveCaptureProcessor` assembles windows to, so the common
+    path is checked rather than exempt. A caller running a non-default capture
+    configuration has to say so here, and finds out at load time instead of
+    inside a pose stream that looks plausible.
 
     Verification precedes the optional Torch import. A user missing Torch sees
     a dependency message only after the project has established that the two
@@ -62,6 +84,11 @@ def load_torch_checkpoint(weights: Path, bundle_path: Path) -> LoadedPoseCheckpo
     silently accepting the wrong model file.
     """
     bundle = CheckpointBundle.read(bundle_path)
+    preprocessing.require_match(
+        bundle.preprocessing,
+        ours="the capture pipeline",
+        theirs=f"checkpoint {bundle_path.name}",
+    )
     bundle.verify_weights(weights)
     width = pose_cnn_width(bundle.metadata.model)
     try:

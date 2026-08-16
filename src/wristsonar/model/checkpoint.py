@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from wristsonar.model.normalization import FeatureNormalizer, PoseNormalizer
+from wristsonar.preprocess import (
+    WATCHHAND_PREPROCESSING,
+    PreprocessingDescriptor,
+)
 from wristsonar.protocol import GroundTruth, Protocol, Split
 
 __all__ = [
@@ -18,8 +22,19 @@ __all__ = [
     "CheckpointMetadata",
 ]
 
-CHECKPOINT_SCHEMA = "wristsonar.checkpoint/1"
-CHECKPOINT_BUNDLE_SCHEMA = "wristsonar.checkpoint-bundle/1"
+CHECKPOINT_SCHEMA = "wristsonar.checkpoint/2"
+"""Version 2 adds the preprocessing descriptor.
+
+Bumped rather than made optional. A version 1 sidecar records the crop and the
+window and nothing else about how its windows were built, so there is no
+answer to the only question that matters at load time, which is whether the
+pipeline about to feed these weights builds the same tensor the training
+corpus did. Refusing to read it is the honest response; the alternative is to
+default the missing fields and be confidently wrong about a checkpoint nobody
+can reconstruct.
+"""
+
+CHECKPOINT_BUNDLE_SCHEMA = "wristsonar.checkpoint-bundle/2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,9 +47,17 @@ class CheckpointMetadata:
     split: Split
     ground_truth: GroundTruth
     calibration_minutes: float
-    crop_bins: int
-    window_frames: int
     sha256_data_manifest: str
+    preprocessing: PreprocessingDescriptor = WATCHHAND_PREPROCESSING
+    """How the training windows this model saw were built.
+
+    Weights are a function of their preprocessing, and until this field
+    existed the function's other argument was written down nowhere. Two
+    reviewers found the same class of defect three times because of it. Stored
+    here so that loading a checkpoint can compare it against the pipeline
+    about to run, and refuse rather than produce well formed nonsense.
+    """
+
     schema: str = CHECKPOINT_SCHEMA
 
     def __post_init__(self) -> None:
@@ -45,8 +68,18 @@ class CheckpointMetadata:
             or not self.sha256_data_manifest
         ):
             raise ValueError("model, dataset version and manifest digest are required")
-        if self.calibration_minutes < 0 or self.crop_bins < 1 or self.window_frames < 1:
-            raise ValueError("checkpoint dimensions and calibration must be positive")
+        if self.calibration_minutes < 0:
+            raise ValueError("calibration minutes cannot be negative")
+
+    @property
+    def crop_bins(self) -> int:
+        """Range bins per window, from the preprocessing contract."""
+        return self.preprocessing.crop_bins
+
+    @property
+    def window_frames(self) -> int:
+        """Frames per window, from the preprocessing contract."""
+        return self.preprocessing.window_frames
 
     def protocol(self, *, subjects: int, held_out_poses: bool = False) -> Protocol:
         return Protocol(
@@ -66,34 +99,32 @@ class CheckpointMetadata:
         )
 
     def to_jsonable(self) -> dict[str, object]:
-        """JSON-safe form used by a legacy sidecar and a full bundle alike."""
-        value: dict[str, object] = asdict(self)
-        value["split"] = self.split.value
-        value["ground_truth"] = self.ground_truth.value
-        return value
+        """JSON-safe form used by a standalone sidecar and a full bundle alike."""
+        return {
+            "schema": self.schema,
+            "model": self.model,
+            "dataset": self.dataset,
+            "dataset_version": self.dataset_version,
+            "split": self.split.value,
+            "ground_truth": self.ground_truth.value,
+            "calibration_minutes": self.calibration_minutes,
+            "sha256_data_manifest": self.sha256_data_manifest,
+            "preprocessing": self.preprocessing.to_jsonable(),
+        }
 
     @classmethod
     def read(cls, path: Path) -> CheckpointMetadata:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if raw.get("schema") != CHECKPOINT_SCHEMA:
-            raise ValueError(f"unsupported checkpoint schema {raw.get('schema')!r}")
-        return cls(
-            model=str(raw["model"]),
-            dataset=str(raw["dataset"]),
-            dataset_version=str(raw["dataset_version"]),
-            split=Split(raw["split"]),
-            ground_truth=GroundTruth(raw["ground_truth"]),
-            calibration_minutes=float(raw["calibration_minutes"]),
-            crop_bins=int(raw["crop_bins"]),
-            window_frames=int(raw["window_frames"]),
-            sha256_data_manifest=str(raw["sha256_data_manifest"]),
-        )
+        return cls.from_jsonable(json.loads(path.read_text(encoding="utf-8")))
 
     @classmethod
     def from_jsonable(cls, raw: dict[str, Any]) -> CheckpointMetadata:
-        """Parse metadata embedded in a bundle or stored as a legacy sidecar."""
+        """Parse metadata embedded in a bundle or stored as a sidecar."""
         if raw.get("schema") != CHECKPOINT_SCHEMA:
-            raise ValueError(f"unsupported checkpoint schema {raw.get('schema')!r}")
+            raise ValueError(
+                f"unsupported checkpoint schema {raw.get('schema')!r}; this "
+                f"release reads {CHECKPOINT_SCHEMA}, which records the "
+                "preprocessing its weights were trained under"
+            )
         return cls(
             model=str(raw["model"]),
             dataset=str(raw["dataset"]),
@@ -101,9 +132,8 @@ class CheckpointMetadata:
             split=Split(raw["split"]),
             ground_truth=GroundTruth(raw["ground_truth"]),
             calibration_minutes=float(raw["calibration_minutes"]),
-            crop_bins=int(raw["crop_bins"]),
-            window_frames=int(raw["window_frames"]),
             sha256_data_manifest=str(raw["sha256_data_manifest"]),
+            preprocessing=PreprocessingDescriptor.from_jsonable(raw["preprocessing"]),
         )
 
 
@@ -128,6 +158,11 @@ class CheckpointBundle:
             raise ValueError(f"unsupported checkpoint bundle schema {self.schema!r}")
         if len(self.sha256_weights) != 64:
             raise ValueError("sha256_weights must be a 64 character hex digest")
+
+    @property
+    def preprocessing(self) -> PreprocessingDescriptor:
+        """The window contract these weights were trained under."""
+        return self.metadata.preprocessing
 
     @staticmethod
     def digest(path: Path) -> str:
