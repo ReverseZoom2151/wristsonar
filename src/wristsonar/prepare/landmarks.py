@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -17,6 +17,7 @@ __all__ = [
     "LandmarkDetector",
     "LandmarkPreparationError",
     "LandmarkPreparationReport",
+    "MediaPipeHandDetector",
     "prepare_landmarks",
 ]
 
@@ -32,6 +33,56 @@ class LandmarkDetector(Protocol):
 
     def detect(self, bgr_frame: NDArray[np.uint8]) -> NDArray[np.float32] | None:
         """Return 21 landmarks in metres, or None when no hand is found."""
+
+
+class MediaPipeHandDetector:
+    """MediaPipe's world-landmark estimator behind the testable detector port.
+
+    MediaPipe reports landmark coordinates in a hand-centred metric-like world
+    frame. They are still video-fitted labels, not motion-capture ground truth;
+    the metadata written by :func:`prepare_landmarks` preserves that fact.
+    """
+
+    version: str
+
+    def __init__(self, *, max_hands: int = 1, min_confidence: float = 0.5) -> None:
+        if max_hands != 1:
+            raise ValueError("WatchHand sidecars support exactly one tracked hand")
+        if not 0.0 <= min_confidence <= 1.0:
+            raise ValueError("min_confidence must lie in [0, 1]")
+        try:
+            import mediapipe as mp
+        except ImportError as error:
+            raise LandmarkPreparationError(
+                "install preparation support with: pip install -e '.[prepare]'"
+            ) from error
+        self._hands: Any = mp.solutions.hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            model_complexity=1,
+            min_detection_confidence=min_confidence,
+            min_tracking_confidence=min_confidence,
+        )
+        self.version = f"mediapipe-{getattr(mp, '__version__', 'unknown')}/hands-1"
+
+    def detect(self, bgr_frame: NDArray[np.uint8]) -> NDArray[np.float32] | None:
+        if bgr_frame.ndim != 3 or bgr_frame.shape[2] != 3:
+            raise LandmarkPreparationError(
+                f"expected BGR frame (height, width, 3), got {bgr_frame.shape}"
+            )
+        rgb = bgr_frame[..., ::-1]
+        result = self._hands.process(rgb)
+        world = result.multi_hand_world_landmarks
+        if not world:
+            return None
+        landmarks = world[0].landmark
+        if len(landmarks) != N_JOINTS:
+            raise LandmarkPreparationError(
+                f"MediaPipe returned {len(landmarks)} landmarks, expected {N_JOINTS}"
+            )
+        return np.asarray(
+            [(point.x, point.y, point.z) for point in landmarks], dtype=np.float32
+        )
 
 
 @dataclass(frozen=True, slots=True)
