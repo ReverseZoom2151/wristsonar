@@ -1,0 +1,39 @@
+[project]
+name = "wristsonar"
+version = "0.0.1"
+description = "3D hand pose from the speaker and microphone already inside a stock smartwatch, reported with the protocol that produced it."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "ReverseZoom2151" }]
+dependencies = ["numpy>=1.26", "scipy>=1.11"]
+
+[project.optional-dependencies]
+train = ["torch>=2.2"]
+dev = ["pytest>=8.0", "hypothesis>=6.100", "ruff>=0.6", "mypy>=1.11"]
+
+[project.urls]
+Repository = "https://github.com/ReverseZoom2151/wristsonar"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wristsonar"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
