@@ -5,7 +5,9 @@ import pytest
 from wristsonar.prepare.landmarks import LandmarkPreparationError, MediaPipeHandDetector
 
 
-def test_mediapipe_detector_explains_the_optional_dependency() -> None:
+def test_mediapipe_detector_explains_the_optional_dependency(
+    without_mediapipe: None,
+) -> None:
     with pytest.raises(LandmarkPreparationError, match=r"\[prepare\]"):
         MediaPipeHandDetector()
 

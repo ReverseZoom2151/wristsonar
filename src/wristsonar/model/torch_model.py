@@ -15,12 +15,22 @@ class ModelUnavailableError(RuntimeError):
     """Raised when training support was not installed explicitly."""
 
 
-def create_pose_cnn(*, channels: int = 2, width: int = 32) -> Any:
+def create_pose_cnn(
+    *, channels: int = 2, width: int = 32, seed: int | None = None
+) -> Any:
     """Build the reproducible baseline model.
 
     This is intentionally a small convolutional baseline, not a claim to have
     reproduced FastViT-T12.  It provides a runnable, causal reference that the
     public-data reproduction must beat before architecture changes are useful.
+
+    ``seed`` seeds the initialisation and nothing else.  It defaults to None,
+    meaning this function leaves the global Torch generator exactly as it found
+    it.  An earlier version called ``torch.manual_seed(0)`` unconditionally
+    here, which silently overrode the caller's seed a line after training set
+    it, so every run initialised identically and a seed sweep measured only
+    batch order.  It also reset the caller's generator on the inference path,
+    since checkpoint loading builds a model too.
     """
     try:
         import torch
@@ -57,8 +67,15 @@ def create_pose_cnn(*, channels: int = 2, width: int = 32) -> Any:
                 )
             return self.head(self.features(x)).reshape(-1, N_JOINTS, 3)
 
-    torch.manual_seed(0)
-    return PoseCNN()
+    if seed is None:
+        return PoseCNN()
+    # Build under a private generator state so the caller's stream is restored.
+    state = torch.get_rng_state()
+    try:
+        torch.manual_seed(seed)
+        return PoseCNN()
+    finally:
+        torch.set_rng_state(state)
 
 
 def load_pose_cnn(weights: Path, *, width: int = 32) -> Any:

@@ -167,7 +167,9 @@ def train_pose_cnn(
     vy = pose_normalizer.transform(valid_y)
 
     torch.manual_seed(active_config.seed)
-    model = create_pose_cnn(channels=2, width=active_config.width)
+    model = create_pose_cnn(
+        channels=2, width=active_config.width, seed=active_config.seed
+    )
     device = torch.device(active_config.device)
     model.to(device)
     optimizer = torch.optim.AdamW(

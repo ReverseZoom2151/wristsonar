@@ -37,7 +37,7 @@ precision for no reason. Parabolic interpolation on the log magnitude of the
 three samples around the peak is the standard estimator: a mainlobe is
 approximately Gaussian near its apex, a Gaussian is exactly a parabola in the
 log domain, and so the fit is not merely a smoothing convenience but the right
-model. `tests/signal/test_interpolation.py` measures that it beats bin
+model. `tests/signal/test_matched_filter.py` measures that it beats bin
 quantisation rather than assuming it.
 """
 

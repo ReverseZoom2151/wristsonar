@@ -43,3 +43,15 @@ def without_opencv(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Run a test as though `pip install -e '.[prepare]'` had never happened."""
     _hide(monkeypatch, "cv2")
     yield
+
+
+@pytest.fixture
+def without_mediapipe(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """As above, for the other half of the `prepare` extra.
+
+    Separate from `without_opencv` because the two are installed together but
+    fail independently, and a test that means to exercise one should not pass
+    because the other happens to be missing.
+    """
+    _hide(monkeypatch, "mediapipe")
+    yield

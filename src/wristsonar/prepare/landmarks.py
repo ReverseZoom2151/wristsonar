@@ -92,6 +92,13 @@ class LandmarkPreparationReport:
     detector_version: str
     frames: int
     missing: int
+    """Always zero on a successful run, and kept for exactly that reason.
+
+    Preparation refuses the first missing detection, so a report that exists
+    is a report with complete labels. The field stays so that a reader of a
+    stored sidecar can confirm that rather than assume it.
+    """
+
     sha256: str
 
 
@@ -103,9 +110,12 @@ def prepare_landmarks(
 ) -> LandmarkPreparationReport:
     """Write one landmark per video frame and an inseparable provenance record.
 
-    Missing detections fail preparation instead of being forward-filled. Filling
-    produces attractive targets but turns detector failures into a hidden motion
-    prior, which would make pose error against these labels uninterpretable.
+    A missing detection fails preparation. It is neither forward-filled nor
+    skipped. Filling turns detector failures into a hidden motion prior, and
+    skipping is worse: dropping a frame shifts every later landmark earlier,
+    which time-warps the label track non-uniformly while leaving an array that
+    looks perfectly well formed. Downstream alignment is by timestamp, so a
+    warped track produces pose error that cannot be interpreted at all.
     """
     try:
         import cv2
@@ -125,8 +135,17 @@ def prepare_landmarks(
                 break
             pose = detector.detect(np.asarray(frame, dtype=np.uint8))
             if pose is None:
-                missing += 1
-                continue
+                # Refuse here rather than at the length check below. That check
+                # only catches a miss when the decoded frame count happens to
+                # equal the timestamp count, so a video with trailing frames
+                # and an equal number of misses used to pass with a silently
+                # compacted, time-warped label track.
+                raise LandmarkPreparationError(
+                    f"detector found no hand in frame {len(poses) + missing} of "
+                    f"{video}. Labels must be complete: a gap cannot be filled "
+                    f"without inventing motion, and cannot be skipped without "
+                    f"warping every later timestamp."
+                )
             if pose.shape != (N_JOINTS, 3):
                 raise LandmarkPreparationError(
                     f"detector returned {pose.shape}, expected ({N_JOINTS}, 3)"

@@ -237,6 +237,14 @@ class PoseGap:
     required_bits: float
     dof: int
     resolution_deg: float
+    range_deg: float = ARM_JOINT_RANGE_DEG
+    """Joint range the requirement was computed over.
+
+    Stored rather than re-read from the module constant, because
+    ``achievable_resolution_deg`` used the constant while ``required_bits``
+    used whatever the caller passed, so a non-default range produced two
+    numbers describing different arms.
+    """
 
     @property
     def deficit_bits(self) -> float:
@@ -268,7 +276,7 @@ class PoseGap:
         number larger than the joint's range, meaning the event does not
         distinguish one arm pose from any other.
         """
-        return float(ARM_JOINT_RANGE_DEG / (2.0 ** (self.available_bits / self.dof)))
+        return float(self.range_deg / (2.0 ** (self.available_bits / self.dof)))
 
     def describe(self) -> str:
         return (
@@ -298,6 +306,7 @@ def pose_gap(
         ),
         dof=dof,
         resolution_deg=resolution_deg,
+        range_deg=range_deg,
     )
 
 

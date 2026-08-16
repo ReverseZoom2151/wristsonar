@@ -18,6 +18,7 @@ from wristsonar.capture.wire import (
     WireError,
     decode_raw_pcm,
     encode_raw_pcm,
+    recv_raw_pcm,
 )
 
 __all__ = [

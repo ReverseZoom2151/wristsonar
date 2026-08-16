@@ -100,8 +100,11 @@ class EchoProfile:
     """One frame of range-resolved echo energy.
 
     The array is indexed by range bin. `bin_metres` converts an index to a
-    round-trip distance, which is what makes a profile interpretable without
-    knowing which chirp produced it.
+    one-way reflector distance, which is what makes a profile interpretable
+    without knowing which chirp produced it. See the field below: the whole
+    package depends on that convention, and this sentence said "round-trip"
+    for a while, which would double every range for anyone who read it and
+    stopped there.
 
     A differential profile, the frame-to-frame difference, is what most of
     this literature actually feeds a model: it suppresses the static
@@ -123,6 +126,16 @@ class EchoProfile:
 
     timestamp_s: float
     differential: bool = False
+    range_offset_m: float = 0.0
+    """One-way distance represented by bin zero.
+
+    Zero for a profile straight out of the matched filter. Cropping sets it,
+    because a cropped profile's bin zero is the crop's near edge rather than
+    range zero. Without it, every range computed as index times bin_metres
+    reads low by exactly the near edge, and a reflector at 10.0 cm cropped to
+    a 2 cm near edge reports 8.2 cm. Use `range_of_bin` rather than doing the
+    multiplication by hand.
+    """
 
     def __post_init__(self) -> None:
         if self.samples.ndim != 1:
@@ -131,14 +144,29 @@ class EchoProfile:
             )
         if self.bin_metres <= 0:
             raise ValueError("bin_metres must be positive")
+        if self.range_offset_m < 0:
+            raise ValueError("range_offset_m cannot be negative")
 
     @property
     def n_bins(self) -> int:
         return int(self.samples.shape[0])
 
+    def range_of_bin(self, index: float) -> float:
+        """One-way reflector distance for a bin index, cropping included.
+
+        Accepts a float so a sub-bin interpolated peak converts correctly.
+        """
+        return self.range_offset_m + index * self.bin_metres
+
+    @property
+    def near_range(self) -> float:
+        """One-way distance of the first bin."""
+        return self.range_offset_m
+
     @property
     def max_range(self) -> float:
-        return self.n_bins * self.bin_metres
+        """One-way distance just past the last bin."""
+        return self.range_offset_m + self.n_bins * self.bin_metres
 
     def crop(self, near_m: float, far_m: float) -> EchoProfile:
         """Keep only the range window that can contain a hand.
@@ -147,11 +175,17 @@ class EchoProfile:
         carry room reflections, and a model handed them will learn the room,
         which is the classic way these systems score well in one place and
         fail in another.
+
+        The result records where its bin zero now sits. Passing the raw
+        `samples` of a cropped profile to a helper that takes `bin_metres`
+        alone loses that, so prefer `range_of_bin` for anything positional.
         """
         if far_m <= near_m:
             raise ValueError("far_m must exceed near_m")
-        lo = max(0, int(near_m / self.bin_metres))
-        hi = min(self.n_bins, int(far_m / self.bin_metres))
+        near_bins = max(0.0, near_m - self.range_offset_m)
+        far_bins = max(0.0, far_m - self.range_offset_m)
+        lo = max(0, int(near_bins / self.bin_metres))
+        hi = min(self.n_bins, int(far_bins / self.bin_metres))
         if hi <= lo:
             raise ValueError(
                 f"crop window {near_m}..{far_m} m selects no bins "
@@ -162,6 +196,7 @@ class EchoProfile:
             bin_metres=self.bin_metres,
             timestamp_s=self.timestamp_s,
             differential=self.differential,
+            range_offset_m=self.range_offset_m + lo * self.bin_metres,
         )
 
 
