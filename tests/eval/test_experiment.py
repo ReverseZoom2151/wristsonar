@@ -7,7 +7,11 @@ import numpy as np
 import pytest
 
 from tests.eval.synthetic import make_dataset
-from wristsonar.eval.experiment import ExperimentError, run_experiment
+from wristsonar.eval.experiment import (
+    ExperimentError,
+    run_cross_user_experiment,
+    run_experiment,
+)
 from wristsonar.eval.guard import GuardName, Waiver
 from wristsonar.eval.splits import cross_user_folds
 from wristsonar.protocol import GroundTruth, Protocol, Split
@@ -93,4 +97,42 @@ def test_experiment_rejects_wrong_prediction_shape() -> None:
             _protocol(),
             name="wrong-shape",
             predictor=lambda dataset, train, test: np.zeros((1, 21, 3)),
+        )
+
+
+def test_cross_user_execution_aggregates_every_held_out_person(tmp_path: Path) -> None:
+    data = make_dataset(n_participants=6, n_sessions=2, n_frames=12)
+
+    result = run_cross_user_experiment(
+        data,
+        _protocol(),
+        name="near-perfect",
+        predictor=lambda dataset, train, test: dataset.poses[test] + 0.0001,
+        waivers=_waivers(),
+    )
+    result.write(tmp_path)
+
+    assert len(result.folds) == 6
+    assert result.test_indices.tolist() == list(range(data.n_samples))
+    assert result.predictions.shape == data.poses.shape
+    assert result.report.guards is not None
+    assert (tmp_path / "folds" / "00" / "report.json").is_file()
+
+
+def test_cross_user_execution_requires_a_cross_user_protocol() -> None:
+    data = make_dataset(n_participants=6, n_sessions=2, n_frames=10)
+    wrong = Protocol(
+        split=Split.CROSS_SESSION,
+        dataset="synthetic",
+        dataset_version="1",
+        ground_truth=GroundTruth.SYNTHETIC,
+        subjects=6,
+    )
+
+    with pytest.raises(ExperimentError, match="CROSS_USER"):
+        run_cross_user_experiment(
+            data,
+            wrong,
+            name="wrong",
+            predictor=lambda dataset, train, test: dataset.poses[test],
         )

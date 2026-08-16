@@ -26,7 +26,13 @@ from wristsonar.eval.calibration import (
     CalibrationPoint,
     sweep_calibration,
 )
-from wristsonar.eval.experiment import ExperimentError, ExperimentResult, run_experiment
+from wristsonar.eval.experiment import (
+    CrossUserExperimentResult,
+    ExperimentError,
+    ExperimentResult,
+    run_cross_user_experiment,
+    run_experiment,
+)
 from wristsonar.eval.guard import (
     GuardFinding,
     GuardName,
@@ -74,6 +80,7 @@ __all__ = [
     "Baseline",
     "CalibrationCurve",
     "CalibrationPoint",
+    "CrossUserExperimentResult",
     "Dataset",
     "ExperimentError",
     "ExperimentResult",
@@ -106,6 +113,7 @@ __all__ = [
     "pa_mpjpe",
     "pck",
     "per_joint_mpjpe",
+    "run_cross_user_experiment",
     "run_experiment",
     "run_guards",
     "sweep_calibration",
