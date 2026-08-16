@@ -69,7 +69,7 @@ artifacts.
 
 **Status: host capture contract, callback synchronization, versioned raw PCM
 transport, listener, and Wear OS sender implemented; Android compilation and
-hardware validation pending.**
+APK assembly verified; hardware validation pending.**
 
 Wear OS duplex capture. This is where platform reality bites: sample-rate lies,
 automatic gain control, buffer underruns, and the fact that two hours of

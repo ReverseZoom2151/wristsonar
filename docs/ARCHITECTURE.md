@@ -1,8 +1,9 @@
 # Architecture
 
 Five layers, in the order data flows through them. The offline and host-side
-layers are implemented; Wear OS compilation and hardware validation, plus a
-trained public checkpoint, remain external validation work. This document distinguishes those states so
+layers are implemented; Wear OS hardware validation and a trained public
+checkpoint remain external validation work. The Wear module compiles to a debug
+APK against Android SDK 35. This document distinguishes those states so
 the architecture is never mistaken for a live device result.
 
 ## The shape of the thing
@@ -31,7 +32,7 @@ was produced under. See EVALUATION.md.
 | Data ingest | `wristsonar.data` | Written, manifest-gated |
 | Model input | `wristsonar.model` | Written; training needs public data |
 | Calibration | `wristsonar.eval.calibration` | Written |
-| Capture health and transport | `wristsonar.capture` | Written; needs Wear OS build and hardware validation |
+| Capture health and transport | `wristsonar.capture` | Written; Wear OS APK compiles, needs hardware validation |
 | Host inference and sinks | `wristsonar.runtime` | Capture wire format, strict inference, JSONL/TCP and Blender written; OpenXR pending |
 
 Everything below marked as intent describes a design decision, not a
@@ -67,8 +68,8 @@ or contain discontinuities. `PcmSynchronizer` turns arbitrary callback
 boundaries into periodic 600-sample chirp frames using the direct acoustic path
 only for timing. A discontinuity discards partial history and forces a new
 lock. `RawPcmWireFrame` supplies a versioned, length-delimited raw PCM transport
-between a watch and this host layer. The Wear OS sender is in `wear/`; its
-Android build and hardware validation remain pending.
+between a watch and this host layer. The Wear OS sender is in `wear/`; its debug
+APK compiles locally, while hardware validation remains pending.
 
 A Wear OS application that plays and records simultaneously. The hard parts are
 duplex timing, disabling automatic gain control and noise suppression where the

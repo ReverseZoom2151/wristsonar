@@ -33,6 +33,7 @@ venv/
 !.env.example
 
 .idea/
+.gradle/
 .vscode/*
 !.vscode/extensions.json
 .DS_Store

@@ -14,9 +14,9 @@ measurement failures, not conditions a model is allowed to absorb.
 
 Open `wear/` in Android Studio with Android SDK 35 and a JDK supported by the
 Android Gradle Plugin declared in `build.gradle.kts`. Install only on a Wear OS
-watch with a speaker and microphone. The app has not been built or validated in
-this repository's Linux environment because it has no JDK, Android SDK, or
-physical watch.
+watch with a speaker and microphone. The debug APK has been compiled locally
+against Android SDK 35. It has not been installed or validated on a physical
+watch.
 
 Before interpreting a pose, validate all of the following on the target watch:
 
