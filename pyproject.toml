@@ -64,3 +64,7 @@ warn_return_any = false
 [[tool.mypy.overrides]]
 module = ["scipy", "scipy.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
+ignore_missing_imports = true
